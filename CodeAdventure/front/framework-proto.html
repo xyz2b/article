@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>一个 C 函数到 CPU 执行的全过程 · 内存与指针</title>
+<title>一条代码的冒险之旅 · 框架原型 v3</title>
 <style>
   :root{
     --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
@@ -77,11 +77,9 @@
   .reg-box{background:rgba(10,14,20,.5);border:1px solid var(--border);border-radius:6px;padding:5px 8px;transition:.18s}
   .reg-box.changed{border-color:var(--change);background:rgba(187,128,9,.18);box-shadow:0 0 0 1px var(--change)}
   .reg-name{font-family:var(--mono);font-size:10px;color:var(--accent);font-weight:600}
-  .reg-name .desc{color:var(--faint);font-weight:400;margin-left:4px;font-size:9px}
   .reg-val{font-family:var(--mono);font-size:14px;color:#fff;font-variant-numeric:tabular-nums;line-height:1.25}
   .reg-box.rip .reg-name,.reg-box.rip .reg-val{color:var(--hot)}
   .reg-box.rsp .reg-name{color:var(--hot)}.reg-box.rbp .reg-name{color:var(--add)}
-  .reg-box.eax .reg-name{color:var(--add)}
 
   /* ── 统一地址空间尺子 ── */
   .addr-space{position:relative}
@@ -134,9 +132,6 @@
   .mrow.fr-add{border-left:3px solid var(--add)}
   .mrow.fr-caller{border-left:3px solid var(--faint)}
   .mrow.fr-bridge{border-left:3px solid var(--hot)}
-  .mrow.redzone{box-shadow:inset 0 0 0 1px rgba(63,185,80,.45);background:rgba(63,185,80,.06)}
-  .mrow.redzone.changed{box-shadow:inset 0 0 0 1px rgba(63,185,80,.45),0 0 0 1px var(--change)}
-  .mrow .rztag{font-size:8px;color:var(--add);font-family:var(--mono);margin-left:4px;border:1px solid rgba(63,185,80,.4);border-radius:3px;padding:0 3px}
   .mrow.text-row{border-left:3px solid var(--text-seg)}
   .mrow.text-row.cur{background:rgba(163,113,247,.14);border-color:var(--text-seg)}
   .mrow.free{border-style:dashed;opacity:.36}.mrow.free .mval{display:none}
@@ -173,8 +168,8 @@
 </head>
 <body>
 <div class="wrap">
-  <h1 class="t">一个 C 函数到 CPU 执行的全过程 · 内存与指针</h1>
-  <p class="sub">add(3, 4) · x86-64 / System V ABI · -O0 · 统一地址空间:代码段·栈同在一根内存尺上,RIP/RSP/RBP 三指针就地标注</p>
+  <h1 class="t">一条代码的冒险之旅 · 框架 v3</h1>
+  <p class="sub">统一地址空间:代码段·栈同在一根内存尺上 · RIP/RSP/RBP 三指针就地标注 · add(3,4) 真实编译产物</p>
   <div class="controls">
     <button id="reset">⏮ 重置</button>
     <button id="prev">← 上一步</button>
@@ -185,7 +180,7 @@
   </div>
   <div class="layout">
     <div class="panel">
-      <div class="ttl">代码 · <span style="color:var(--hot);text-transform:none;letter-spacing:0;font-family:var(--mono)">%rip</span> 指向正在执行的指令
+      <div class="ttl">代码
         <div class="tabs">
           <span class="tab" data-track="c">C</span>
           <span class="tab on" data-track="asm">汇编</span>
@@ -200,8 +195,8 @@
     </div>
   </div>
   <div class="narr">
-    <span class="badge" id="badge">就绪</span>
-    <div class="text" id="narr-text">点「下一步」开始。看三个指针在真实内存上移动:<code>%rip</code> 在代码段里逐条爬行,<code>%rsp</code>/<code>%rbp</code> 沿栈地址上下滑动。</div>
+    <span class="badge" id="badge">步骤 0</span>
+    <div class="text" id="narr-text">点「下一步」开始。右侧内存是一根完整地址尺:底部 .text 代码段(RIP 在此爬行),顶部栈(RSP/RBP 在此起落)。</div>
   </div>
   <div class="legend">
     <span><i class="dot" style="background:var(--text-seg)"></i>代码段 / RIP</span>
@@ -209,13 +204,9 @@
     <span><i class="dot" style="background:var(--add)"></i>RBP / add 帧</span>
     <span><i class="dot" style="background:var(--accent)"></i>main 帧</span>
     <span><i class="dot" style="background:var(--change)"></i>本步变化</span>
-    <span style="color:var(--faint)">绿框 = add 的红区(写在 RSP 之下)</span>
   </div>
 </div>
 <script>
-"use strict";
-const $=id=>document.getElementById(id);
-
 const C_SRC=[
   '<span class="ctype">int</span> <span class="cfn">add</span>(<span class="ctype">int</span> a, <span class="ctype">int</span> b) {',
   '    <span class="ctype">int</span> c = a + b;',
@@ -250,16 +241,9 @@ const ASM=[
   {fn:'main',addr:'48',bytes:'5d',         text:'popq  <span class="reg">%rbp</span>'},
   {fn:'main',addr:'49',bytes:'c3',         text:'retq'},
 ];
-const REG_DEFS=[
-  {k:'rip',cls:'rip',desc:'下一条在哪'},
-  {k:'eax',cls:'eax',desc:'返回值信箱'},
-  {k:'rsp',cls:'rsp',desc:'栈顶指针'},
-  {k:'rbp',cls:'rbp',desc:'基准指针'},
-  {k:'edi',cls:'',desc:'参数 1'},
-  {k:'esi',cls:'',desc:'参数 2'},
-];
+const REG_DEFS=[{k:'rip',cls:'rip'},{k:'eax',cls:'eax'},{k:'rsp',cls:'rsp'},{k:'rbp',cls:'rbp'},{k:'edi',cls:''},{k:'esi',cls:''}];
 
-// 栈槽位:高地址→低地址(index 0 = 最高)。
+// 栈槽位:高地址→低地址(index 0 = 最高)。rspSlot 决定哪些槽"在册"(0..rspSlot)。
 const SLOTS=[
   {id:'ret_main', addr:'..ff10',name:'main 返回地址',     frame:'caller'},
   {id:'srbp_main',addr:'..ff08',name:'存起来的上层 %rbp', frame:'main'},
@@ -272,6 +256,8 @@ const SLOTS=[
   {id:'c',        addr:'..ffd4',name:'c @ -c(rbp)',       frame:'add'},
 ];
 const SLOT_IX={};SLOTS.forEach((s,i)=>SLOT_IX[s.id]=i);
+const TEXT_ROWS=ASM.map((a,i)=>({addr:a.addr,i}));
+
 
 // ── 进程虚拟地址空间:从高地址到低地址的完整段布局 ──
 const SEGMENTS=[
@@ -284,101 +270,105 @@ const SEGMENTS=[
   {id:'text',  name:'.text 代码段',     range:'0x555…',   grow:'RIP 在此·只读可执行',cls:'s-text',  kind:'text'},
 ];
 
+
+// 步骤:rspAt/rbpAt = 指针停在哪个栈格 id(或 'top'=栈顶空位之上)
 // 步骤模型:i=ASM下标;live=当前在册栈槽id(高→低);rspAt/rbpAt=指针所在槽(null=不在图上);
-// vals 累积合并;slotChanged=本步变动的槽;redzone=标为红区的槽;flow=总线方向。
-function S(o){return Object.assign({phase:'execute',devices:['cpu','mem'],activeSegs:['stack','text'],flow:null,changed:[],slotChanged:[],redzone:[],vals:{}},o);}
+// vals 累积合并;slotChanged=本步变动的槽;flow=总线方向。
+function S(o){return Object.assign({phase:'execute',devices:['cpu','mem'],activeSegs:['stack','text'],flow:null,changed:[],slotChanged:[],vals:{}},o);}
+const L0=['ret_main'];
 const Lmain=['ret_main','srbp_main','mret','x'];
 const Lcall=Lmain.concat('ret_add');
 const Ladd=Lcall.concat('srbp_add','a','b','c');
-const RZ=['a','b','c'];
 const STEPS=[
   // ── 第一幕:main 建帧 ──
-  S({i:0,live:['ret_main','srbp_main'],rspAt:'srbp_main',rbpAt:null,badge:'main · 序言',
+  S({i:0,live:['ret_main','srbp_main'],rspAt:'srbp_main',rbpAt:null,
      regs:{rip:'0x20',eax:'?',rsp:'..ff08',rbp:'(上层)',edi:'?',esi:'?'},
      vals:{ret_main:'→runtime',srbp_main:'旧 rbp'},slotChanged:['srbp_main'],
-     narr:'<b>main: pushq %rbp</b> — 程序从 main 开始(运行时已 <code>callq main</code>,返回地址在栈)。栈顶 <code>%rsp</code> 先减 8,把调用者的基准线压栈保管。看 RSP 指针向下滑了一格。',changed:['rip','rsp']}),
-  S({i:1,live:['ret_main','srbp_main'],rspAt:'srbp_main',rbpAt:'srbp_main',badge:'main · 序言',
+     narr:'<b>main: pushq %rbp</b> — 程序从 main 开始(运行时已 callq main,返回地址在栈)。先把上层基准线压栈保管。',changed:['rip','rsp']}),
+  S({i:1,live:['ret_main','srbp_main'],rspAt:'srbp_main',rbpAt:'srbp_main',
      regs:{rip:'0x21',eax:'?',rsp:'..ff08',rbp:'..ff08',edi:'?',esi:'?'},
      vals:{ret_main:'→runtime',srbp_main:'旧 rbp'},
-     narr:'<b>main: movq %rsp,%rbp</b> — 把当前栈顶设为 main 的基准线。RBP 指针出现并落到 RSP 同一行——从此 <code>%rbp</code> 钉死不动当标尺。',changed:['rip','rbp']}),
-  S({i:2,live:Lmain,rspAt:'x',rbpAt:'srbp_main',badge:'main · 建栈',
+     narr:'<b>main: movq %rsp,%rbp</b> — RBP 钉在栈顶,成为 main 的基准线。',changed:['rip','rbp']}),
+  S({i:2,live:Lmain,rspAt:'x',rbpAt:'srbp_main',
      regs:{rip:'0x24',eax:'?',rsp:'..fff8',rbp:'..ff08',edi:'?',esi:'?'},
      vals:{ret_main:'→runtime',srbp_main:'旧 rbp'},slotChanged:['mret','x'],
-     narr:'<b>main: subq $0x10,%rsp</b> — 栈顶向低地址挪 16 字节,给局部变量挖空地(返回值槽 + x)。RSP 又向下滑,RBP 留在原处。',changed:['rip','rsp']}),
-  S({i:3,live:Lmain,rspAt:'x',rbpAt:'srbp_main',flow:{dir:'w',label:'0 →返回值槽'},badge:'main · 建栈',
+     narr:'<b>main: subq $0x10,%rsp</b> — 栈顶下移 16 字节,给局部变量挖空地(返回值槽 + x)。',changed:['rip','rsp']}),
+  S({i:3,live:Lmain,rspAt:'x',rbpAt:'srbp_main',flow:{dir:'w',label:'0 →返回值槽'},
      regs:{rip:'0x28',eax:'?',rsp:'..fff8',rbp:'..ff08',edi:'?',esi:'?'},
      vals:{mret:'0'},slotChanged:['mret'],
-     narr:'<b>main: movl $0x0,-4(%rbp)</b> — 把返回值槽填 0。注意它正好在 RBP 下方 4 字节那格。',changed:['rip']}),
-  S({i:4,live:Lmain,rspAt:'x',rbpAt:'srbp_main',badge:'main · 备参数',
+     narr:'<b>main: movl $0x0,-4(%rbp)</b> — 返回值槽填 0。',changed:['rip']}),
+  S({i:4,live:Lmain,rspAt:'x',rbpAt:'srbp_main',
      regs:{rip:'0x2f',eax:'?',rsp:'..fff8',rbp:'..ff08',edi:'3',esi:'?'},
-     narr:'<b>main: movl $0x3,%edi</b> — 第一个参数 a=3 放进寄存器 <code>%edi</code>(前 6 个整型参数走寄存器,不碰内存)。',changed:['rip','edi']}),
-  S({i:5,live:Lmain,rspAt:'x',rbpAt:'srbp_main',badge:'main · 备参数',
+     narr:'<b>main: movl $0x3,%edi</b> — 备第一个参数 a=3 进 <code>%edi</code>(调用约定)。',changed:['rip','edi']}),
+  S({i:5,live:Lmain,rspAt:'x',rbpAt:'srbp_main',
      regs:{rip:'0x34',eax:'?',rsp:'..fff8',rbp:'..ff08',edi:'3',esi:'4'},
-     narr:'<b>main: movl $0x4,%esi</b> — 第二个参数 b=4 放进 <code>%esi</code>。',changed:['rip','esi']}),
+     narr:'<b>main: movl $0x4,%esi</b> — 备第二个参数 b=4 进 <code>%esi</code>。',changed:['rip','esi']}),
   // ── 第二幕:调用 add ──
-  S({i:6,live:Lcall,rspAt:'ret_add',rbpAt:'srbp_main',badge:'main · 调用',
+  S({i:6,live:Lcall,rspAt:'ret_add',rbpAt:'srbp_main',
      regs:{rip:'→0x0',eax:'?',rsp:'..ffe8',rbp:'..ff08',edi:'3',esi:'4'},
      vals:{ret_add:'0x3e'},slotChanged:['ret_add'],
-     narr:'<b>main: callq add</b> 做两件事:① 把返回地址 <code>0x3e</code> 压栈(RSP 下滑一格)当路标;② RIP 跳到 add——看代码里 RIP 从 main 一下飞到 add 顶部。',changed:['rip','rsp']}),
-  S({i:7,live:Ladd.slice(0,6),rspAt:'srbp_add',rbpAt:'srbp_main',badge:'add · 序言',
+     narr:'<b>main: callq add</b> — 压入返回地址 0x3e 当路标,RIP 跳进 add。栈帧开始往下叠。',changed:['rip','rsp']}),
+  S({i:7,live:Ladd.slice(0,6),rspAt:'srbp_add',rbpAt:'srbp_main',
      regs:{rip:'0x1',eax:'?',rsp:'..ffe0',rbp:'..ff08',edi:'3',esi:'4'},
      vals:{srbp_add:'main rbp'},slotChanged:['srbp_add'],
-     narr:'<b>add: pushq %rbp</b> — 替 main 保管基准线,把 main 的 rbp 压栈。RSP 继续下滑,RBP 此刻还指 main。',changed:['rip','rsp']}),
-  S({i:8,live:Ladd.slice(0,6),rspAt:'srbp_add',rbpAt:'srbp_add',badge:'add · 序言',
+     narr:'<b>add: pushq %rbp</b> — 替 main 保管基准线。RBP 此刻还指 main。',changed:['rip','rsp']}),
+  S({i:8,live:Ladd.slice(0,6),rspAt:'srbp_add',rbpAt:'srbp_add',
      regs:{rip:'0x4',eax:'?',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
      vals:{srbp_add:'main rbp'},
-     narr:'<b>add: movq %rsp,%rbp</b> — 基准线易主。RBP 指针滑下来和 RSP 重合——add 的栈帧立起来了。',changed:['rip','rbp']}),
-  S({i:9,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'w',label:'a=3 →栈'},redzone:RZ,badge:'add · 收参数(红区)',
+     narr:'<b>add: movq %rsp,%rbp</b> — 基准线易主:RBP 归 add,和 RSP 重合。add 的帧立起来了。',changed:['rip','rbp']}),
+  S({i:9,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'w',label:'a=3 →栈'},
      regs:{rip:'0x7',eax:'?',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
      vals:{a:'3'},slotChanged:['a'],
-     narr:'<b>add: movl %edi,-4(%rbp)</b> — 把 a=3 写到 RBP 下方。注意它写在 <b>RSP 之下</b>——这就是叶子函数的"红区",绿框标出,RSP 全程不动。<span style="color:var(--hot)">数据 CPU→内存</span>。',changed:['rip']}),
-  S({i:10,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'w',label:'b=4 →栈'},redzone:RZ,badge:'add · 收参数(红区)',
+     narr:'<b>add: movl %edi,-4(%rbp)</b> — a(3)写到栈(红区,RSP 不动)。<span style="color:var(--hot)">数据 CPU→内存</span>。',changed:['rip']}),
+  S({i:10,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'w',label:'b=4 →栈'},
      regs:{rip:'0xa',eax:'?',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
-     vals:{a:'3',b:'4'},slotChanged:['b'],
-     narr:'<b>add: movl %esi,-8(%rbp)</b> — b=4 也写进红区。',changed:['rip']}),
-  S({i:11,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'r',label:'读 a →eax'},redzone:RZ,badge:'add · 计算',
+     vals:{b:'4'},slotChanged:['b'],
+     narr:'<b>add: movl %esi,-8(%rbp)</b> — b(4)写到栈。',changed:['rip']}),
+  S({i:11,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'r',label:'读 a →eax'},
      regs:{rip:'0xd',eax:'3',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
      vals:{a:'3',b:'4'},
-     narr:'<b>add: movl -4(%rbp),%eax</b> — 把 a 从栈取回 <code>%eax</code>——CPU 只能在寄存器里算术。<span style="color:var(--hot)">数据 内存→CPU</span>。',changed:['rip','eax']}),
-  S({i:12,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'r',label:'+b'},redzone:RZ,badge:'add · 这就是 +',
+     narr:'<b>add: movl -4(%rbp),%eax</b> — a 读回 <code>%eax</code>。<span style="color:var(--hot)">数据 内存→CPU</span>。',changed:['rip','eax']}),
+  S({i:12,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'r',label:'+b'},
      regs:{rip:'0x10',eax:'7',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
      vals:{a:'3',b:'4'},
-     narr:'<b>add: addl -8(%rbp),%eax</b> — 「+」的真身 <code>03 45 f8</code>:<code>eax = 3+4 = </code><b style="color:var(--add)">7</b>。代码里 RIP 正停在它上面。',changed:['rip','eax']}),
-  S({i:13,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'w',label:'c=7 →栈'},redzone:RZ,badge:'add · 计算',
+     narr:'<b>add: addl -8(%rbp),%eax</b> — 「+」的真身 <code>03 45 f8</code>:eax = 3+4 = <b style="color:var(--add)">7</b>。',changed:['rip','eax']}),
+  S({i:13,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'w',label:'c=7 →栈'},
      regs:{rip:'0x13',eax:'7',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
      vals:{c:'7'},slotChanged:['c'],
-     narr:'<b>add: movl %eax,-c(%rbp)</b> — 结果 c=7 存回红区。<code>int c = a + b;</code> 执行完。',changed:['rip']}),
-  S({i:14,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'r',label:'c →eax'},redzone:RZ,badge:'add · 备返回值',
+     narr:'<b>add: movl %eax,-c(%rbp)</b> — 结果 7 写回栈格 c。',changed:['rip']}),
+  S({i:14,live:Ladd,rspAt:'srbp_add',rbpAt:'srbp_add',flow:{dir:'r',label:'c →eax'},
      regs:{rip:'0x16',eax:'7',rsp:'..ffe0',rbp:'..ffe0',edi:'3',esi:'4'},
      vals:{c:'7'},
-     narr:'<b>add: movl -c(%rbp),%eax</b> — 把 c 取进 <code>%eax</code>——约定的"返回值信箱"。',changed:['rip','eax']}),
+     narr:'<b>add: movl -c(%rbp),%eax</b> — 把返回值放进 <code>%eax</code>(返回值信箱)。',changed:['rip','eax']}),
   // ── 第三幕:add 返回、拆帧 ──
-  S({i:15,live:Lcall,rspAt:'ret_add',rbpAt:'srbp_main',badge:'add · 尾声',
+  S({i:15,live:Lcall,rspAt:'ret_add',rbpAt:'srbp_main',
      regs:{rip:'0x17',eax:'7',rsp:'..ffe8',rbp:'..ff08',edi:'3',esi:'4'},
-     narr:'<b>add: popq %rbp</b> — 弹出"存起来的 main %rbp"还给 <code>%rbp</code>,RSP 上滑一格。RBP 指针滑回 main 的基准线,add 的红区(a/b/c)随帧作废。',changed:['rip','rsp','rbp']}),
-  S({i:16,live:Lmain,rspAt:'x',rbpAt:'srbp_main',badge:'add · 返回',
+     narr:'<b>add: popq %rbp</b> — 基准线还给 main。add 的红区(a/b/c)随帧作废。',changed:['rip','rsp','rbp']}),
+  S({i:16,live:Lmain,rspAt:'x',rbpAt:'srbp_main',
      regs:{rip:'→0x3e',eax:'7',rsp:'..fff8',rbp:'..ff08',edi:'3',esi:'4'},
-     narr:'<b>add: retq</b>(<code>c3</code>) — 弹出返回地址 <code>0x3e</code> 塞回 RIP。RSP 再上滑,RIP 飞回 main;add 帧整块拆掉,只有 <code>%eax</code> 的 <b style="color:var(--add)">7</b> 带回去。',changed:['rip','rsp']}),
-  S({i:17,live:Lmain,rspAt:'x',rbpAt:'srbp_main',flow:{dir:'w',label:'eax →x'},badge:'main · 收返回值',
+     narr:'<b>add: retq</b> — 弹出路标 0x3e 回 main。add 帧整块拆掉,只有 <code>%eax</code> 的 <b style="color:var(--add)">7</b> 带回去。',changed:['rip','rsp']}),
+  S({i:17,live:Lmain,rspAt:'x',rbpAt:'srbp_main',flow:{dir:'w',label:'eax →x'},
      regs:{rip:'0x41',eax:'7',rsp:'..fff8',rbp:'..ff08',edi:'3',esi:'4'},
      vals:{x:'7'},slotChanged:['x'],
-     narr:'<b>main: movl %eax,-8(%rbp)</b> — 从信箱 <code>%eax</code> 取出 7 存进 <code>x</code>。<code>int x = add(3,4);</code> 到此完成。',changed:['rip']}),
-  S({i:18,live:Lmain,rspAt:'x',rbpAt:'srbp_main',flow:{dir:'r',label:'读 x →eax'},badge:'main · 备返回值',
+     narr:'<b>main: movl %eax,-8(%rbp)</b> — 从信箱取 7 存进 x。<code>int x=add(3,4)</code> 到此完成。',changed:['rip']}),
+  S({i:18,live:Lmain,rspAt:'x',rbpAt:'srbp_main',flow:{dir:'r',label:'读 x →eax'},
      regs:{rip:'0x44',eax:'7',rsp:'..fff8',rbp:'..ff08',edi:'3',esi:'4'},
      vals:{x:'7'},
-     narr:'<b>main: movl -8(%rbp),%eax</b> — 把 x 取进 <code>%eax</code> 当 main 自己的返回值。',changed:['rip','eax']}),
-  S({i:19,live:['ret_main','srbp_main'],rspAt:'srbp_main',rbpAt:'srbp_main',badge:'main · 尾声',
+     narr:'<b>main: movl -8(%rbp),%eax</b> — 取 x 当 main 自己的返回值。',changed:['rip','eax']}),
+  S({i:19,live:['ret_main','srbp_main'],rspAt:'srbp_main',rbpAt:'srbp_main',
      regs:{rip:'0x48',eax:'7',rsp:'..ff08',rbp:'..ff08',edi:'3',esi:'4'},
-     narr:'<b>main: addq $0x10,%rsp</b> — 填回挖的 16 字节,和序言的 subq 严格对称。RSP 上滑两格,局部变量作废。',changed:['rip','rsp']}),
-  S({i:20,live:['ret_main'],rspAt:'ret_main',rbpAt:null,badge:'main · 尾声',
+     narr:'<b>main: addq $0x10,%rsp</b> — 填回挖的 16 字节,main 的局部变量区作废。',changed:['rip','rsp']}),
+  S({i:20,live:['ret_main'],rspAt:'ret_main',rbpAt:null,
      regs:{rip:'0x49',eax:'7',rsp:'..ff10',rbp:'(上层)',edi:'3',esi:'4'},
-     narr:'<b>main: popq %rbp</b> — 还原调用者的基准线,RBP 指针滑出视野(回到上层)。',changed:['rip','rsp','rbp']}),
-  S({i:21,live:[],rspAt:null,rbpAt:null,done:true,badge:'main · 返回',
+     narr:'<b>main: popq %rbp</b> — 还原上层基准线。',changed:['rip','rsp','rbp']}),
+  S({i:21,live:[],rspAt:null,rbpAt:null,done:true,
      regs:{rip:'→runtime',eax:'7',rsp:'..ff18',rbp:'(上层)',edi:'3',esi:'4'},
-     narr:'<b>main: retq</b> — 弹出 main 的返回地址,交还控制权给运行时。栈面回到程序刚启动的样子——一压一弹,干干净净。',changed:['rip']}),
+     narr:'<b>main: retq</b> — 交还控制权给运行时。整个栈面回到程序启动前。涨上去的每一步都对称地退了回来。',changed:['rip']}),
 ];
 
+
 let track='asm',cur=0,timer=null,autoOn=false;
+const $=id=>document.getElementById(id);
 const codeBd=$('code-bd');
 
 function renderCode(activeI){
@@ -401,6 +391,7 @@ function renderCode(activeI){
     const row=codeBd.querySelector(`.asm-row[data-i="${activeI}"]`),rip=$('rip-code');
     if(row&&rip){
       rip.style.top=(row.offsetTop+row.offsetHeight/2)+'px';rip.classList.remove('hide');
+      // 将当前行滚动到视觉中心
       const target=row.offsetTop-(codeBd.clientHeight/2)+(row.offsetHeight/2);
       codeBd.scrollTo({top:Math.max(0,target),behavior:'smooth'});
     }
@@ -411,29 +402,30 @@ function renderCode(activeI){
 // CPU 面板
 function cpuHTML(s){
   const regs=REG_DEFS.map(r=>`<div class="reg-box ${r.cls}${(s.changed||[]).includes(r.k)?' changed':''}">
-    <div class="reg-name">%${r.k}<span class="desc">${r.desc}</span></div><div class="reg-val">${s.regs[r.k]}</div></div>`).join('');
-  const ph=['fetch','decode','execute'].map(p=>`<i class="${!s.done&&p===s.phase?'on':''}">${({fetch:'取指',decode:'译码',execute:'执行'})[p]}</i>`).join('');
+    <div class="reg-name">%${r.k}</div><div class="reg-val">${s.regs[r.k]}</div></div>`).join('');
+  const ph=['fetch','decode','execute'].map(p=>`<i class="${p===s.phase?'on':''}">${({fetch:'取指',decode:'译码',execute:'执行'})[p]}</i>`).join('');
   return `<div class="device cpu"><div class="dh"><span>⬢</span>CPU<div class="ph">${ph}</div></div>
     <div class="db"><div class="reg-grid">${regs}</div></div></div>`;
 }
 
 // 统一地址空间:所有段粗略列出(折叠),点击或当前步涉及则展开
-const openSegs=new Set(['stack','heap']);
+const openSegs=new Set(['stack','heap']); // 默认只展开栈+堆(有数据才展开)
 function cumVals(){const v={};for(let i=0;i<=cur;i++)Object.assign(v,STEPS[i].vals||{});return v;}
 function segBodyHTML(seg,s){
   if(seg.kind==='stack'){
-    const vals=cumVals(),live=s.live||[],chg=s.slotChanged||[],rz=s.redzone||[];
+    const vals=cumVals(),live=s.live||[],chg=s.slotChanged||[];
     if(!live.length) return `<div style="font-size:10.5px;color:var(--faint);font-family:var(--mono);text-align:center;padding:6px">— 栈已清空,回到启动前 —</div>`;
+    // 按 SLOTS 顺序(高→低),只渲染在册的
     const rows=SLOTS.filter(sl=>live.includes(sl.id)).map(sl=>{
-      const v=vals[sl.id],inRz=rz.includes(sl.id);
-      return `<div class="mrow fr-${sl.frame}${chg.includes(sl.id)?' changed':''}${inRz?' redzone':''}" data-sid="${sl.id}">
-        <span class="mleft"><span class="maddr">${sl.addr}</span> <span class="mname">${sl.name}</span>${inRz?'<span class="rztag">红区</span>':''}</span>
+      const v=vals[sl.id];
+      return `<div class="mrow fr-${sl.frame}${chg.includes(sl.id)?' changed':''}" data-sid="${sl.id}">
+        <span class="mleft"><span class="maddr">${sl.addr}</span> <span class="mname">${sl.name}</span></span>
         <span class="mval">${v==null?'':v}</span></div>`;
     }).join('');
     return `<div class="mcol" id="stk-col">${rows}</div>`;
   }
   if(seg.kind==='text'){
-    let rows='';
+    let last=null,rows='';
     ASM.forEach((a,i)=>{
       const op=a.text.replace(/<[^>]+>/g,'').trim();
       rows+=`<div class="mrow text-row${i===s.i?' cur':''}" data-tid="${i}">
@@ -476,6 +468,7 @@ function busHTML(flow){
 
 // 把指针标签挂到内存格子上:按目标槽分组,同指一格的竖排成摞
 function placePtrGroup(col,sel,key,ptrs){
+  // ptrs: [{name,target}] —— target 与 data 属性 key 匹配
   const byTarget={};
   ptrs.forEach(p=>{if(p.target==null)return;(byTarget[p.target]=byTarget[p.target]||[]).push(p.name);});
   Object.entries(byTarget).forEach(([target,names])=>{
@@ -503,9 +496,9 @@ function render(){
   stage.innerHTML=html;
   if(hasMem){ requestAnimationFrame(()=>placePointers(s)); if(s.flow) animateTrail(s.flow.dir); }
   const b=$('badge');
-  b.textContent=s.done?'完成':(s.badge||('步骤 '+(cur+1)));
+  b.textContent=s.done?'完成':('步骤 '+(cur+1));
   b.className='badge'+(s.done?' done':'');
-  $('narr-text').innerHTML=s.narr+(s.done?'<br><b style="color:var(--add)">▶ 程序执行结束,栈面归零。</b>':'');
+  $('narr-text').innerHTML=s.narr;
   $('counter').textContent=(cur+1)+' / '+STEPS.length;
   $('prev').disabled=cur===0;$('next').disabled=cur===STEPS.length-1;
 }
@@ -559,3 +552,4 @@ render();
 </script>
 </body>
 </html>
+
