@@ -2,7 +2,7 @@
 
 ---
 
-> **🎯 交互式可视化**：[点击这里体验 C-to-CPU 执行流程动画](https://xyz2b.github.io/article/CodeAdventure/front/c-to-cpu.html)  
+> **🎯 交互式可视化**：[点击这里体验 C-to-CPU 执行流程动画](https://xyz2b.github.io/article/CodeAdventure/front/c-to-cpu-visualizer.html)  
 > 你可以在交互界面里一步步推进指令，实时看寄存器、栈和内存的变化。
 
 ---
