@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一次 malloc(16) 到底问谁要内存 · libc 内存池的分配与回收</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --text-seg:#a371f7; --heap:#3fb9b0; --rodata:#d29922; --data:#db6d28;
+    --kernel:#f778ba; --phys:#56d364; --free:#6e7681;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --rowh:34px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1800px;margin:0 auto;padding:14px 24px 50px}
+  h1.t{font-size:18px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:9px 14px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:6px 12px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-count{color:var(--dim);font-variant-numeric:tabular-nums;min-width:70px;text-align:center;margin-left:auto}
+  input[type=range]{width:120px;accent-color:var(--accent)}
+
+  .layout{display:grid;grid-template-columns:330px 1fr;gap:14px;align-items:start}
+  @media(max-width:980px){.layout{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:8px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+  .panel .ttl .ttl-txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .panel .ttl .tabs{margin-left:auto;display:flex;gap:4px;flex:0 0 auto}
+  .panel .ttl .tab{font-size:10px;padding:2px 8px;border-radius:5px;cursor:pointer;border:1px solid var(--border);color:var(--faint);text-transform:none;letter-spacing:0}
+  .panel .ttl .tab.on{color:#fff;border-color:var(--hot);background:rgba(240,136,62,.16)}
+  .panel .bd{padding:10px 12px}
+
+  /* 代码面板 + RIP 行内箭头 */
+  #code-bd{position:relative;padding-left:26px;max-height:420px;overflow-y:auto;scroll-behavior:smooth}
+  pre.code{margin:0;font-family:var(--mono);font-size:12px;line-height:1.65;overflow-x:auto}
+  .cline{display:block;padding:1px 8px;border-radius:5px;white-space:pre;color:var(--text);transition:.15s}
+  .cline.active{background:rgba(88,166,255,.16);box-shadow:inset 2px 0 0 var(--accent)}
+  .ckw{color:#ff7b72}.ctype{color:#79c0ff}.cnum{color:#a5d6ff}.cfn{color:#d2a8ff}.ccmt{color:var(--faint)}
+  .asm-row{display:flex;gap:8px;font-family:var(--mono);font-size:11.5px;padding:3px 4px;border-radius:5px;align-items:baseline;transition:.15s}
+  .asm-row.active{background:rgba(240,136,62,.16);box-shadow:inset 2px 0 0 var(--hot)}
+  .asm-addr{color:var(--faint);flex:0 0 24px}
+  .asm-bytes{color:var(--dim);flex:0 0 auto;white-space:nowrap}
+  .asm-text{flex:1 1 auto;white-space:nowrap}
+  #code-bd.bytes .asm-text{text-align:right}
+  .asm-text .reg{color:#ffa657}.asm-text .imm{color:#a5d6ff}.asm-text .op{color:var(--accent)}
+  #rip-code{position:absolute;left:2px;display:flex;align-items:center;gap:1px;font-family:var(--mono);font-size:9px;font-weight:700;color:var(--hot);transform:translateY(-50%);transition:top .4s cubic-bezier(.4,0,.2,1),opacity .2s;pointer-events:none}
+  #rip-code .arw{font-size:12px}
+  #rip-code.hide{opacity:0}
+
+  /* 三层舞台:用户态(代码+寄存器) → libc 池子 → 内核账本+物理内存 */
+  .stage{position:relative;padding:14px;display:flex;flex-direction:column;gap:12px;
+    background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px),repeating-linear-gradient(90deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px);}
+  .tier{border:1px solid var(--border);border-radius:10px;background:var(--panel2);position:relative;transition:.3s;opacity:.45}
+  .tier.on{opacity:1}
+  .tier .th{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;font-weight:700}
+  .tier .th .tag{margin-left:auto;font-size:9px;font-weight:600;padding:1px 7px;border-radius:5px;border:1px solid var(--border);color:var(--faint);font-style:normal}
+  .tier .tb{padding:11px 12px}
+  .tier.t-user{box-shadow:0 0 0 1px rgba(240,136,62,.35)}
+  .tier.t-user .th{color:var(--hot)}
+  .tier.t-libc{box-shadow:0 0 0 1px rgba(63,185,176,.4)}
+  .tier.t-libc .th{color:var(--heap)}
+  .tier.t-kernel{box-shadow:0 0 0 1px rgba(247,120,186,.4)}
+  .tier.t-kernel .th{color:var(--kernel)}
+  .tier.on.flash{animation:tflash .6s}
+  @keyframes tflash{0%{box-shadow:0 0 0 3px currentColor}100%{box-shadow:0 0 0 1px currentColor}}
+
+  /* 用户态:寄存器 + 变量 p */
+  .urow{display:flex;gap:10px;flex-wrap:wrap}
+  .reg-box{flex:1 1 0;min-width:120px;background:rgba(10,14,20,.5);border:1px solid var(--border);border-radius:6px;padding:5px 9px;transition:.18s}
+  .reg-box.changed{border-color:var(--change);background:rgba(187,128,9,.18);box-shadow:0 0 0 1px var(--change)}
+  .reg-name{font-family:var(--mono);font-size:10px;color:var(--accent);font-weight:600}
+  .reg-name .desc{color:var(--faint);font-weight:400;margin-left:4px;font-size:9px}
+  .reg-val{font-family:var(--mono);font-size:13.5px;color:#fff;font-variant-numeric:tabular-nums;line-height:1.3;word-break:break-all}
+  .reg-box.rax .reg-name{color:var(--add)}
+  .reg-box.edi .reg-name{color:var(--hot)}
+  .reg-box.pvar{border-left:3px solid var(--accent)}
+  .reg-box.pvar .reg-name{color:var(--accent)}
+
+  /* libc 内存池 arena —— 一条横向的地址带,内部切成 chunk */
+  .arena-meta{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:8px;display:flex;gap:14px;flex-wrap:wrap}
+  .arena-meta b{color:var(--heap);font-weight:700}
+  .arena-meta .empty{color:var(--faint);font-style:italic}
+  .arena{position:relative;border:1px dashed var(--heap);border-radius:8px;background:rgba(63,185,176,.05);
+    padding:10px;min-height:84px;display:flex;align-items:stretch;gap:0;overflow-x:auto}
+  .arena.empty-pool{align-items:center;justify-content:center;border-style:dashed;opacity:.7}
+  .arena .pool-empty{font-family:var(--mono);font-size:11px;color:var(--faint);font-style:italic}
+  /* 单个 chunk:头 + 数据区 */
+  .chunk{flex:0 0 auto;display:flex;flex-direction:column;margin-right:10px;transition:.3s;position:relative}
+  .chunk .clabel{font-family:var(--mono);font-size:9.5px;color:var(--faint);text-align:center;margin-bottom:4px;line-height:1.4;max-width:100%}
+  .chunk .cbar{display:flex;align-items:stretch;border-radius:6px;overflow:hidden;border:1px solid var(--border)}
+  .chunk .chead{flex:0 0 auto;width:26px;background:rgba(210,153,34,.22);border-right:1px dashed var(--rodata);
+    display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:8px;color:var(--rodata);writing-mode:vertical-rl;letter-spacing:1px;font-weight:700}
+  .chunk .cdata{flex:1 1 auto;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11.5px;font-weight:600;
+    min-height:54px;padding:8px 14px;text-align:center;line-height:1.4;white-space:nowrap}
+  .chunk.used .cdata{background:rgba(88,166,255,.12);color:var(--accent)}
+  .chunk.mine .cbar{border-color:var(--add);box-shadow:0 0 0 1px var(--add)}
+  .chunk.mine .cdata{background:rgba(63,185,80,.16);color:#fff}
+  .chunk.freec .cdata{background:repeating-linear-gradient(45deg,rgba(110,118,129,.12) 0 6px,transparent 6px 12px);color:var(--free);border-style:dashed}
+  .chunk.freec .cbar{border-style:dashed;border-color:var(--free)}
+  .chunk.fresh .cdata{background:rgba(63,185,176,.1);color:var(--heap);border-style:dashed}
+  .chunk.changed .cbar{box-shadow:0 0 0 2px var(--change)}
+  .chunk .ctag{position:absolute;top:-7px;right:-4px;font-size:8px;background:var(--add);color:#04130a;border-radius:4px;padding:0 4px;font-weight:700;font-family:var(--mono)}
+
+  /* 内核层:program break 标尺 + 页表 + 物理内存页框 */
+  .kgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:1100px){.kgrid{grid-template-columns:1fr}}
+  .kbox{border:1px solid var(--border);border-radius:8px;background:rgba(10,14,20,.4);padding:9px 11px}
+  .kbox .kh{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--kernel);margin-bottom:8px;letter-spacing:.3px}
+  /* program break:一根竖直的堆地址带,break 线可上移 */
+  .brkwrap{position:relative;height:118px;border-left:2px solid var(--border);margin-left:84px;padding-left:0}
+  .brkseg{position:absolute;left:0;right:8px;border-radius:5px;font-family:var(--mono);font-size:9.5px;
+    display:flex;align-items:center;padding-left:8px;transition:.4s;color:var(--dim)}
+  .brkseg.committed{background:rgba(63,185,176,.18);border:1px solid var(--heap);color:var(--heap)}
+  .brkseg.unmapped{background:repeating-linear-gradient(45deg,rgba(82,90,100,.1) 0 7px,transparent 7px 14px);border:1px dashed var(--faint);color:var(--faint)}
+  .brkline{position:absolute;left:0;right:8px;height:0;border-top:2px dashed var(--kernel);transition:.5s}
+  .brkline .blab{position:absolute;left:-84px;top:-8px;width:80px;text-align:right;font-family:var(--mono);font-size:8.5px;color:var(--kernel);font-weight:700;white-space:nowrap}
+  .brkline .bval{position:absolute;left:-84px;top:4px;width:80px;text-align:right;font-family:var(--mono);font-size:8px;color:var(--kernel);opacity:.8}
+
+  /* 物理内存:一排页框 */
+  .frames{display:flex;flex-wrap:wrap;gap:6px}
+  .frame{width:42px;height:42px;border:1px solid var(--border);border-radius:6px;background:rgba(10,14,20,.5);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:var(--mono);font-size:8px;color:var(--faint);transition:.3s;position:relative}
+  .frame .fn{font-size:7.5px;color:var(--faint)}
+  .frame.filled{border-color:var(--phys);background:rgba(86,211,100,.16);color:var(--phys)}
+  .frame.filled .fv{font-size:11px;color:#fff;font-weight:700}
+  .frame.changed{box-shadow:0 0 0 2px var(--change);border-color:var(--change)}
+  .frame.fault{animation:fault .7s}
+  @keyframes fault{0%,100%{box-shadow:0 0 0 0 var(--kernel)}40%{box-shadow:0 0 0 3px var(--kernel)}}
+
+  /* 页表小条:虚拟页 → 物理页 的映射 */
+  .ptab{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+  .pte{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9.5px;padding:3px 6px;border:1px solid var(--border);border-radius:5px;background:rgba(10,14,20,.5)}
+  .pte .vp{color:var(--heap)}
+  .pte .arrow{color:var(--faint)}
+  .pte .pp{color:var(--phys)}
+  .pte.nomap .pp{color:var(--faint);font-style:italic}
+  .pte.nomap{border-style:dashed;opacity:.7}
+  .pte.changed{border-color:var(--change);box-shadow:0 0 0 1px var(--change)}
+
+  /* 叙事 + 图例 */
+  .narr{margin-top:14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 15px;display:flex;gap:13px;align-items:flex-start}
+  .narr .badge{flex:0 0 auto;font-family:var(--mono);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;background:rgba(240,136,62,.18);color:var(--hot);border:1px solid var(--hot);white-space:nowrap}
+  .narr .badge.libc{background:rgba(63,185,176,.18);color:var(--heap);border-color:var(--heap)}
+  .narr .badge.kernel{background:rgba(247,120,186,.16);color:var(--kernel);border-color:var(--kernel)}
+  .narr .badge.done{background:rgba(63,185,80,.18);color:var(--add);border-color:var(--add)}
+  .narr .text code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
+  .narr .text b.hot{color:var(--hot)}.narr .text b.libc{color:var(--heap)}.narr .text b.kernel{color:var(--kernel)}.narr .text b.add{color:var(--add)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dim);margin-top:12px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">一次 malloc(16) 到底问谁要内存 · libc 内存池的分配与回收</h1>
+  <p class="sub">malloc(16) → p[0]=42 → free(p) · 三层惰性接力:libc 池子切 chunk · 内核只记账(brk) · 物理页用到才配(缺页中断)</p>
+  <div class="controls">
+    <button id="reset">⏮ 重置</button>
+    <button id="prev">← 上一步</button>
+    <button id="next" class="primary">下一步 →</button>
+    <button id="auto">▶ 自动</button>
+    <label style="font-size:11px;color:var(--dim)">速度<input type="range" id="speed" min="300" max="2200" value="1200"></label>
+    <span class="step-count" id="counter">0 / 0</span>
+  </div>
+  <div class="layout">
+    <div class="panel">
+      <div class="ttl"><span class="ttl-txt">代码 · <span style="color:var(--hot);text-transform:none;letter-spacing:0;font-family:var(--mono)">%rip</span> 当前指令</span>
+        <div class="tabs">
+          <span class="tab" data-track="c">C</span>
+          <span class="tab on" data-track="asm">汇编</span>
+          <span class="tab" data-track="bytes">机器码</span>
+        </div>
+      </div>
+      <div class="bd" id="code-bd"></div>
+    </div>
+    <div class="panel">
+      <div class="ttl">三层视角 · 谁真正在动</div>
+      <div class="stage" id="stage"></div>
+    </div>
+  </div>
+  <div class="narr">
+    <span class="badge" id="badge">就绪</span>
+    <div class="text" id="narr-text">点「下一步」开始。一行 <code>malloc(16)</code> 背后是三层在偷懒:<b class="libc">libc</b> 先翻自己的池子能切就切;翻空了才向<b class="kernel">内核</b> brk 批发,内核也只记账不给物理内存;直到你<b class="hot">第一次写</b>,才触发缺页、配上真正的物理页。</div>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--hot)"></i>用户态 / 寄存器</span>
+    <span><i class="dot" style="background:var(--heap)"></i>libc 池子 / chunk</span>
+    <span><i class="dot" style="background:var(--rodata)"></i>chunk 头(元数据)</span>
+    <span><i class="dot" style="background:var(--add)"></i>你这块 16B</span>
+    <span><i class="dot" style="background:var(--kernel)"></i>内核 / program break</span>
+    <span><i class="dot" style="background:var(--phys)"></i>物理内存页框</span>
+    <span style="color:var(--faint)">虚线 = 只记账、还没真给</span>
+  </div>
+</div>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+
+const C_SRC=[
+  '<span class="ctype">int</span> <span class="cfn">main</span>(<span class="ctype">void</span>) {',
+  '    <span class="ctype">int</span> *p = <span class="cfn">malloc</span>(<span class="cnum">16</span>);   <span class="ccmt">// 要 16 字节,地址记进 p</span>',
+  '    p[<span class="cnum">0</span>] = <span class="cnum">42</span>;             <span class="ccmt">// 第一次往这块内存写</span>',
+  '    <span class="cfn">free</span>(p);               <span class="ccmt">// 用完,还回去</span>',
+  '    <span class="ckw">return</span> p[<span class="cnum">0</span>];',
+  '}'];
+// 汇编下标 → C 行号
+const ASM=[
+  {fn:'main',addr:'00',bytes:'55',         text:'pushq <span class="reg">%rbp</span>',                              c:0},
+  {fn:'main',addr:'01',bytes:'48 89 e5',   text:'movq  <span class="reg">%rsp</span>, <span class="reg">%rbp</span>',c:0},
+  {fn:'main',addr:'04',bytes:'48 83 ec 10',text:'subq  <span class="imm">$16</span>, <span class="reg">%rsp</span>', c:0},
+  {fn:'main',addr:'08',bytes:'c7 45 fc 00',text:'movl  <span class="imm">$0</span>, <span class="op">-4</span>(<span class="reg">%rbp</span>)',c:0},
+  {fn:'main',addr:'0f',bytes:'bf 10 00 00',text:'movl  <span class="imm">$16</span>, <span class="reg">%edi</span>',  c:1},
+  {fn:'main',addr:'14',bytes:'e8 ..',      text:'callq <span class="op">malloc@PLT</span>',                        c:1},
+  {fn:'main',addr:'19',bytes:'48 89 45 f0',text:'movq  <span class="reg">%rax</span>, <span class="op">-16</span>(<span class="reg">%rbp</span>)',c:1},
+  {fn:'main',addr:'1d',bytes:'48 8b 45 f0',text:'movq  <span class="op">-16</span>(<span class="reg">%rbp</span>), <span class="reg">%rax</span>',c:2},
+  {fn:'main',addr:'21',bytes:'c7 00 2a 00',text:'movl  <span class="imm">$42</span>, (<span class="reg">%rax</span>)',  c:2},
+  {fn:'main',addr:'27',bytes:'48 8b 7d f0',text:'movq  <span class="op">-16</span>(<span class="reg">%rbp</span>), <span class="reg">%rdi</span>',c:3},
+  {fn:'main',addr:'2b',bytes:'e8 ..',      text:'callq <span class="op">free@PLT</span>',                          c:3},
+  {fn:'main',addr:'30',bytes:'48 8b 45 f0',text:'movq  <span class="op">-16</span>(<span class="reg">%rbp</span>), <span class="reg">%rax</span>',c:4},
+  {fn:'main',addr:'34',bytes:'8b 00',      text:'movl  (<span class="reg">%rax</span>), <span class="reg">%eax</span>',c:4},
+];
+const REG_DEFS=[
+  {k:'rip',cls:'',  desc:'下一条在哪'},
+  {k:'edi',cls:'edi',desc:'malloc 参数'},
+  {k:'rax',cls:'rax',desc:'返回值信箱(地址)'},
+  {k:'p',  cls:'pvar',desc:'变量 p(栈上,存地址)'},
+];
+
+// ── 物理内存页框:固定 8 格,默认两格被别的东西占着,其余空闲 ──
+function frames(filledId,val){
+  const base=[
+    {id:0,label:'代码',val:'…',filled:true},
+    {id:1,label:'其他',val:'…',filled:true},
+    {id:2,label:'',val:'',filled:false},
+    {id:3,label:'',val:'',filled:false},
+    {id:4,label:'',val:'',filled:false},
+    {id:5,label:'',val:'',filled:false},
+    {id:6,label:'',val:'',filled:false},
+    {id:7,label:'',val:'',filled:false},
+  ];
+  if(filledId!=null){const f=base.find(x=>x.id===filledId);f.filled=true;f.label='你的页';f.val=val;f.changed=true;f.fault=true;}
+  return base;
+}
+// 页表条目
+const PTE_NOMAP=[{vp:'你这块的虚拟页',pp:'尚未映射',nomap:true}];
+const PTE_MAPPED=[{vp:'你这块的虚拟页',pp:'物理页框 #4',nomap:false,changed:true}];
+
+// ── arena(libc 池子)几种状态 ──
+// val = 框内短状态;label = 框上方完整说明
+const POOL_EMPTY={reserved:false,chunks:[]};
+function poolFresh(){return {reserved:true,chunks:[
+  {id:'big',kind:'fresh',w:330,head:true,label:'刚向内核批发的 ~132KB · 整块空闲、还没切',val:'空闲（虚拟地址，暂无物理页）'},
+]};}
+function poolCarved(myVal,myKind,myLabel){return {reserved:true,chunks:[
+  {id:'mine',kind:myKind||'mine',w:150,head:true,label:myLabel||'malloc(16) 切给你的 chunk',val:myVal||''},
+  {id:'rest',kind:'fresh',w:240,head:true,label:'池子剩余空闲 · 留着下次 malloc 切',val:'空闲'},
+]};}
+
+// 默认状态:S() 合并覆盖
+function S(o){return Object.assign({
+  tiers:['user'],flash:null,regs:{},changed:[],
+  pool:POOL_EMPTY,brk:{committed:0},frames:frames(),ptab:PTE_NOMAP,
+  badge:'',badgeCls:'',i:null,
+},o);}
+
+const STEPS=[
+  // ── 第一幕:用户态准备 ──
+  S({i:0,tiers:['user'],regs:{rip:'0x00',edi:'?',rax:'?',p:'?'},changed:['rip'],
+     badge:'main · 序言',
+     narr:'<b class="hot">main: pushq %rbp / movq %rsp,%rbp / subq $16,%rsp</b> — 函数序言,和上一篇一模一样:立基准线、给局部变量挖栈空间。变量 <code>p</code> 就住在这片栈空间里,目前是垃圾值。真正的戏还没开场。'}),
+  S({i:4,tiers:['user'],regs:{rip:'0x0f',edi:'16',rax:'?',p:'?'},changed:['rip','edi'],
+     badge:'main · 备参数',
+     narr:'<b class="hot">main: movl $16, %edi</b> — 把参数 <code>16</code> 放进 <code>%edi</code>(第一个整型参数走 %edi)。<code>malloc</code> 只要一个参数:你要多少字节。16 就位,等着被取走。'}),
+  // ── 第二幕:跳进 libc,翻池子 ──
+  S({i:5,tiers:['user','libc'],flash:'libc',regs:{rip:'→libc',edi:'16',rax:'?',p:'?'},changed:['rip'],
+     pool:POOL_EMPTY,badge:'libc · 接管',badgeCls:'libc',
+     narr:'<b class="hot">main: callq malloc@PLT</b> — 控制权离开我们的代码,跳进 libc 那几千行。<b class="libc">malloc 第一反应不是找操作系统,而是翻自己的「小金库」</b>(arena 内存池)。可现在程序刚启动,池子还是空的 —— 没有现成的空闲块可切。'}),
+  // ── 第三幕:池子空了,向内核 brk 批发 ──
+  S({i:5,tiers:['user','libc','kernel'],flash:'kernel',regs:{rip:'(libc 内)',edi:'16',rax:'?',p:'?'},changed:[],
+     pool:poolFresh(),brk:{committed:60},frames:frames(),ptab:PTE_NOMAP,
+     badge:'内核 · brk 批发',badgeCls:'kernel',
+     narr:'池子空 → libc 只好敲内核的门:<b class="kernel">brk 把堆顶(program break)往上推一大截</b>(囤 ~132KB,不是只推 16B)。但请看右边两件事:<b class="kernel">① 内核只在账本上记了「这段虚拟地址归你」</b>,page table 仍是「尚未映射」;<b class="phys">② 物理内存页框一个没动</b>。这就是开了张<b>空头支票</b>。'}),
+  // ── 第四幕:libc 从批发来的大块里切一小块 ──
+  S({i:5,tiers:['user','libc'],flash:'libc',regs:{rip:'(libc 内)',edi:'16',rax:'0x5555…02a0',p:'?'},changed:['rax'],
+     pool:poolCarved('16B · 内容未定','mine','malloc(16) 切给你的 chunk（还没写入）'),brk:{committed:60},frames:frames(),ptab:PTE_NOMAP,
+     badge:'libc · 切 chunk',badgeCls:'libc',
+     narr:'libc 从这块囤货里<b class="libc">切下一个 chunk 给你</b>。注意每个 chunk 前面那条竖纹「头」—— 记着这块多大、前一块是否空闲,是 libc 管池子的元数据。<b>所以你要 16B,实际占掉的不止 16B</b>。切完把地址 <code>0x5555…02a0</code> 放进返回信箱 <b class="add">%rax</b>。<b>全程没再碰内核</b>。'}),
+  // ── 第五幕:malloc 返回,地址抄进 p ──
+  S({i:6,tiers:['user','libc'],regs:{rip:'0x19',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:['rip','p'],
+     pool:poolCarved('16B · 内容未定','mine','你的 chunk（地址已抄进 p，仍未写入）'),brk:{committed:60},frames:frames(),ptab:PTE_NOMAP,
+     badge:'main · 收地址',badgeCls:'',
+     narr:'<b class="hot">main: movq %rax, -16(%rbp)</b> — 回到我们的代码,把信箱 <b class="add">%rax</b> 里的地址抄进栈上的变量 <code>p</code>。<code>int *p = malloc(16)</code> 完成。<b>记住此刻 p 里只是一个地址</b>,那块 16B 在 libc 池子里;而且它还是张空头支票 —— 右边页表仍「尚未映射」,物理内存仍空着。'}),
+  S({i:7,tiers:['user','libc'],regs:{rip:'0x1d',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:['rip','rax'],
+     pool:poolCarved('16B · 内容未定','mine','你的 chunk（即将第一次写入）'),brk:{committed:60},frames:frames(),ptab:PTE_NOMAP,
+     badge:'main · 准备写',badgeCls:'',
+     narr:'<b class="hot">main: movq -16(%rbp), %rax</b> — 要写了,先把 <code>p</code> 里那个地址从栈读回 <code>%rax</code> 抓在手里。下一条就是关键的「第一次写」。'}),
+  // ── 第六幕:第一次写 → 缺页中断 → 内核配物理页 ──
+  S({i:8,tiers:['user','libc','kernel'],flash:'kernel',regs:{rip:'0x21',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:['rip'],
+     pool:poolCarved('16B · 写入 42…','mine','你的 chunk（CPU 正在写 42）'),brk:{committed:60},frames:frames(),ptab:PTE_NOMAP,
+     badge:'⚡ 缺页中断',badgeCls:'kernel',
+     narr:'<b class="hot">main: movl $42, (%rax)</b> — CPU 拿 %rax 里的虚拟地址去写,通过页表一查:<b class="kernel">这地址还没对应任何物理内存!</b>(看右边页表:尚未映射、页框全空)。CPU 当场停下,触发 <b class="kernel">缺页中断(page fault)</b>,陷入内核。内核认出:这是我之前开的空头支票,现在他真要用了。'}),
+  S({i:8,tiers:['user','libc','kernel'],flash:'kernel',regs:{rip:'0x21',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:[],
+     pool:poolCarved('16B = 42','mine','你的 chunk（42 已落到物理内存）'),brk:{committed:60},frames:frames(4,'42'),ptab:PTE_MAPPED,
+     badge:'内核 · 兑现支票',badgeCls:'kernel',
+     narr:'内核<b class="phys">从内存条上找一个空闲物理页框(#4),填进页表</b> —— 看右边:页表从「尚未映射」变成指向 #4,物理页框 #4 亮起。映射建好,CPU 回到那条 <code>movl</code> 重新执行,<b class="add">42 这才真正落到内存条上</b>。<b>malloc 返回的一直是「假地址」,第一次写才兑现成真内存。</b>'}),
+  // ── 第七幕:free,把 chunk 还回池子(不还内核)──
+  S({i:9,tiers:['user','libc'],regs:{rip:'0x27',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:['rip'],
+     pool:poolCarved('16B = 42','mine','你的 chunk（即将 free）'),brk:{committed:60},frames:frames(4,'42'),ptab:PTE_MAPPED,
+     badge:'main · 准备 free',badgeCls:'',
+     narr:'<b class="hot">main: movq -16(%rbp), %rdi</b> — 把 <code>p</code> 里的地址放进 <code>%rdi</code>(free 的第一个参数),准备告诉 libc:「这块地我不用了」。'}),
+  S({i:10,tiers:['user','libc'],flash:'libc',regs:{rip:'→libc',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:['rip'],
+     pool:poolCarved('空闲（42 仍在）','freec','已标记空闲、还回池子（内容 42 未抹）'),brk:{committed:60},frames:frames(4,'42'),ptab:PTE_MAPPED,
+     badge:'libc · free',badgeCls:'libc',
+     narr:'<b class="hot">main: callq free@PLT</b> — free 干的多半<b>不是你以为的「还给操作系统」</b>。它只是把这块 chunk 在 libc 池子里<b class="libc">标记成空闲</b>,收回备用(看那块从实心变虚线斜纹)。<b>地址没还给内核、物理页框 #4 仍占着、页表仍映射着</b> —— RSS 不降的真相。'}),
+  S({i:12,tiers:['user','libc'],regs:{rip:'0x34',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0(悬空)'},changed:['rax'],
+     pool:poolCarved('空闲（仍可读 42）','freec','已 free · 旧值仍可读 = use-after-free 隐患'),brk:{committed:60},frames:frames(4,'42'),ptab:PTE_MAPPED,
+     badge:'⚠ use-after-free',badgeCls:'',
+     narr:'<b class="hot">main: movl (%rax), %eax</b> — free 之后又去读这个地址。因为物理内存还在、地址也没收回,<b>常常还能读到那个 42</b>。但这是定时炸弹:这块地已还回池子,libc 随时会把它切给下一次 malloc。读写一个已 free 的指针,就是臭名昭著的 <b class="kernel">use-after-free</b> —— 物理根源就是这一节:<b>地还在,只是主人随时会换。</b>'}),
+  // ── 收尾:三层惰性总结 ──
+  S({i:12,tiers:['user','libc','kernel'],regs:{rip:'→runtime',edi:'16',rax:'0x5555…02a0',p:'0x5555…02a0'},changed:[],done:true,
+     pool:poolCarved('空闲','freec','空闲 chunk · 留给下一次 malloc 复用'),brk:{committed:60},frames:frames(4,'42'),ptab:PTE_MAPPED,
+     badge:'三层惰性',badgeCls:'done',
+     narr:'整条链子串起来,是<b>三层「能拖就拖」的接力</b>:<b class="libc">① libc</b>:能从池子切就绝不找内核(系统调用太贵);<b class="kernel">② 内核</b>:能只记账(给虚拟地址)就绝不真配物理内存(brk 只开支票);<b class="phys">③ 物理内存</b>:能等你第一次写再配页就绝不提前(缺页时才兑现)。每层都赌你大概率用不到 —— 赌赢就省一大笔。'}),
+];
+
+let track='asm',cur=0,timer=null,autoOn=false;
+const codeBd=$('code-bd');
+
+function renderCode(activeI){
+  if(track==='c'){
+    const cl=(activeI!=null&&ASM[activeI])?ASM[activeI].c:0;
+    codeBd.innerHTML='<pre class="code">'+C_SRC.map((l,i)=>
+      `<span class="cline${i===cl?' active':''}">${l||' '}</span>`).join('')+'</pre>';
+    return;
+  }
+  let html='';
+  codeBd.classList.toggle('bytes',track==='bytes');
+  html+=`<div style="font-family:var(--mono);font-size:10px;color:var(--add);margin:2px 0 2px;font-weight:700">main:</div>`;
+  ASM.forEach((a,i)=>{
+    const on=i===activeI?' active':'';
+    const A=`<span class="asm-bytes">${a.bytes}</span>`,B=`<span class="asm-text">${a.text}</span>`;
+    html+=`<div class="asm-row${on}" data-i="${i}"><span class="asm-addr">${a.addr}:</span>${track==='bytes'?A+B:B+A}</div>`;
+  });
+  codeBd.innerHTML=html+'<div id="rip-code"><span class="arw">▶</span>RIP</div>';
+  requestAnimationFrame(()=>{
+    const row=codeBd.querySelector(`.asm-row[data-i="${activeI}"]`),rip=$('rip-code');
+    if(row&&rip){
+      rip.style.top=(row.offsetTop+row.offsetHeight/2)+'px';rip.classList.remove('hide');
+      const target=row.offsetTop-(codeBd.clientHeight/2)+(row.offsetHeight/2);
+      codeBd.scrollTo({top:Math.max(0,target),behavior:'smooth'});
+    } else if(rip) rip.classList.add('hide');
+  });
+}
+
+// ── 用户态层:寄存器 + 变量 p ──
+function userHTML(s){
+  const regs=REG_DEFS.map(r=>`<div class="reg-box ${r.cls}${(s.changed||[]).includes(r.k)?' changed':''}">
+    <div class="reg-name">${r.k==='p'?'p':'%'+r.k}<span class="desc">${r.desc}</span></div>
+    <div class="reg-val">${s.regs[r.k]==null?'?':s.regs[r.k]}</div></div>`).join('');
+  return tier('user','t-user','⬢ 用户态 · 我们的代码 + 寄存器','user',
+    `<div class="urow">${regs}</div>`,s);
+}
+
+// ── libc 层:内存池 arena ──
+function libcHTML(s){
+  const p=s.pool;
+  let body;
+  if(!p.reserved){
+    body=`<div class="arena empty-pool"><span class="pool-empty">池子是空的 —— 还没向内核批发过任何地</span></div>`;
+  } else {
+    const chunks=p.chunks.map(c=>{
+      const cls=c.kind+(c.id==='mine'?' mine':'');
+      return `<div class="chunk ${cls}" style="">
+        ${c.id==='mine'&&c.kind==='mine'?'<span class="ctag">你的</span>':''}
+        <div class="clabel">${c.label}</div>
+        <div class="cbar">${c.head?'<div class="chead">头</div>':''}<div class="cdata" style="min-width:${c.w}px">${c.val||''}</div></div>
+      </div>`;
+    }).join('');
+    body=`<div class="arena">${chunks}</div>`;
+  }
+  const meta=p.reserved
+    ? `<div class="arena-meta"><span>这是 libc 向内核<b>批发</b>来的一大块,自己当「二房东」按需切给你</span><span>每个 chunk 前的「头」= 管理元数据(大小/前块状态)</span></div>`
+    : `<div class="arena-meta"><span class="empty">malloc 先翻这里找现成空闲块;找到就切,根本不碰内核</span></div>`;
+  return tier('libc','t-libc','▤ libc 内存池 arena · malloc 的「小金库」','二房东',meta+body,s);
+}
+
+// ── 内核层:program break 标尺 + 页表 + 物理页框 ──
+function kernelHTML(s){
+  const committed=s.brk.committed||0; // 0~100,已批发给堆的高度百分比
+  // brk 带:底部 committed 部分是「已划归你的虚拟地址」,上面是未映射
+  const brk=`<div class="kbox"><div class="kh">① 进程地址空间 · 堆顶 program break</div>
+    <div class="brkwrap">
+      <div class="brkseg committed" style="bottom:0;height:${committed}%">堆区(虚拟地址已划归你)</div>
+      <div class="brkseg unmapped" style="bottom:${committed}%;height:${100-committed}%">未分配的虚拟地址</div>
+      <div class="brkline" style="bottom:${committed}%"><span class="blab">program break ▶</span><span class="bval">${committed?'(brk 已上推)':'(初始堆顶)'}</span></div>
+    </div>
+    <div style="font-family:var(--mono);font-size:8.5px;color:var(--faint);margin-top:6px">brk 只把这条边界往上推 = 内核在账本上记一笔,<b style="color:var(--kernel)">不给物理内存</b></div>
+  </div>`;
+  // 页表 + 物理页框
+  const pte=(s.ptab||[]).map(e=>`<div class="pte ${e.nomap?'nomap':''}${e.changed?' changed':''}">
+    <span class="vp">${e.vp}</span><span class="arrow">→</span><span class="pp">${e.pp}</span></div>`).join('');
+  const fr=s.frames.map(f=>`<div class="frame ${f.filled?'filled':''}${f.changed?' changed':''}${f.fault?' fault':''}">
+    <span class="fn">#${f.id}</span>${f.filled?`<span class="fv">${f.val||''}</span>`:''}<span class="fn">${f.label||'空'}</span></div>`).join('');
+  const phys=`<div class="kbox"><div class="kh">② 物理内存页框 + 页表映射</div>
+    <div class="frames">${fr}</div>
+    <div class="ptab">${pte}</div>
+    <div style="font-family:var(--mono);font-size:8.5px;color:var(--faint);margin-top:6px">页表把「虚拟页 → 物理页框」对应起来,<b style="color:var(--phys)">第一次写</b>缺页时内核才填这一笔</div>
+  </div>`;
+  return tier('kernel','t-kernel','◆ 内核 · 账本(虚拟地址) + 物理内存','陷入内核',`<div class="kgrid">${brk}${phys}</div>`,s);
+}
+
+// 通用 tier 外壳
+function tier(id,cls,title,tag,body,s){
+  const on=(s.tiers||[]).includes(id);
+  const flash=s.flash===id?' flash':'';
+  return `<div class="tier ${cls}${on?' on':''}${on?flash:''}" data-tier="${id}">
+    <div class="th"><span>${title}</span><span class="tag">${tag}</span></div>
+    <div class="tb">${body}</div></div>`;
+}
+
+const stage=$('stage');
+function render(){
+  const s=STEPS[cur];
+  renderCode(s.i);
+  stage.innerHTML=userHTML(s)+libcHTML(s)+kernelHTML(s);
+  const b=$('badge');
+  b.textContent=s.done?'完成 · 三层惰性':(s.badge||('步骤 '+(cur+1)));
+  b.className='badge '+(s.done?'done':(s.badgeCls||''));
+  $('narr-text').innerHTML=s.narr+(s.done?'<br><b class="add">▶ 回到开头那句 int *p = malloc(16):它从来不是「操作系统给了我 16 字节」,而是这条三层惰性的链子。</b>':'');
+  $('counter').textContent=(cur+1)+' / '+STEPS.length;
+  $('prev').disabled=cur===0;$('next').disabled=cur===STEPS.length-1;
+}
+
+function go(n){cur=Math.max(0,Math.min(STEPS.length-1,n));render();}
+$('next').onclick=()=>go(cur+1);
+$('prev').onclick=()=>go(cur-1);
+$('reset').onclick=()=>{stopAuto();go(0);};
+function stopAuto(){autoOn=false;clearTimeout(timer);$('auto').textContent='▶ 自动';$('auto').classList.remove('primary');}
+$('auto').onclick=()=>{
+  if(autoOn){stopAuto();return;}
+  autoOn=true;$('auto').textContent='⏸ 暂停';$('auto').classList.add('primary');
+  (function loop(){if(!autoOn)return;if(cur>=STEPS.length-1){stopAuto();return;}go(cur+1);timer=setTimeout(loop,+$('speed').value);})();
+};
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
+  track=t.dataset.track;renderCode(STEPS[cur].i);
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'){go(cur+1);e.preventDefault();}
+  if(e.key==='ArrowLeft'){go(cur-1);e.preventDefault();}
+  if(e.key===' '){$('auto').click();e.preventDefault();}
+});
+render();
+</script>
+</body>
+</html>
