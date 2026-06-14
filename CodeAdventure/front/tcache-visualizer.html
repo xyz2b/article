@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>free 完再 malloc 为什么拿回同一块 · tcache / fastbin 空闲链的分配与回收</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --heap:#3fb9b0; --rodata:#d29922; --next:#a371f7;
+    --tc:#3fb9b0; --fb:#f0883e; --free:#6e7681; --danger:#f778ba;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1800px;margin:0 auto;padding:14px 24px 50px}
+  h1.t{font-size:18px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:9px 14px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:6px 12px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-count{color:var(--dim);font-variant-numeric:tabular-nums;min-width:70px;text-align:center;margin-left:auto}
+  input[type=range]{width:120px;accent-color:var(--accent)}
+
+  .layout{display:grid;grid-template-columns:330px 1fr;gap:14px;align-items:start}
+  @media(max-width:980px){.layout{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:8px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+  .panel .bd{padding:10px 12px}
+
+  /* 代码面板 */
+  #code-bd{position:relative;max-height:300px;overflow-y:auto;scroll-behavior:smooth}
+  pre.code{margin:0;font-family:var(--mono);font-size:12px;line-height:1.7;overflow-x:auto}
+  .cline{display:block;padding:1px 8px;border-radius:5px;white-space:pre;color:var(--text);transition:.15s}
+  .cline.active{background:rgba(88,166,255,.16);box-shadow:inset 2px 0 0 var(--accent)}
+  .ckw{color:#ff7b72}.ctype{color:#79c0ff}.cnum{color:#a5d6ff}.cfn{color:#d2a8ff}.ccmt{color:var(--faint)}
+
+  /* 说明小卡（代码面板下方） */
+  .keynote{margin-top:10px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);font-size:11.5px;color:var(--dim);line-height:1.55}
+  .keynote b{color:var(--next)}
+  .keynote .kk{font-family:var(--mono);color:var(--tc)}
+
+  /* 舞台：上=分桶全景（一排桶），下=当前操作的桶链表特写 */
+  .stage{position:relative;padding:14px;display:flex;flex-direction:column;gap:14px;
+    background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px),repeating-linear-gradient(90deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px);}
+  .zone{border:1px solid var(--border);border-radius:10px;background:var(--panel2);position:relative}
+  .zone .zh{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;font-weight:700}
+  .zone .zh .tag{margin-left:auto;font-size:9px;font-weight:600;padding:1px 7px;border-radius:5px;border:1px solid var(--border);color:var(--faint);font-style:normal}
+  .zone .zb{padding:11px 12px}
+  .zone.z-buckets .zh{color:var(--accent)}
+  .zone.z-tcache{box-shadow:0 0 0 1px rgba(63,185,176,.4)}
+  .zone.z-tcache .zh{color:var(--tc)}
+  .zone.z-fast{box-shadow:0 0 0 1px rgba(240,136,62,.4);opacity:.5;transition:.3s}
+  .zone.z-fast.on{opacity:1}
+  .zone.z-fast .zh{color:var(--fb)}
+
+  /* 分桶全景：一排小桶，按 chunk 大小等差 16 */
+  .buckets{display:flex;gap:7px;flex-wrap:wrap;align-items:flex-end;margin-top:22px}
+  .bk{flex:0 0 auto;width:62px;border:1px solid var(--border);border-radius:7px;background:rgba(10,14,20,.5);
+    padding:6px 4px 5px;text-align:center;transition:.25s;position:relative;cursor:default}
+  .bk .bksz{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text)}
+  .bk .bkidx{font-family:var(--mono);font-size:8.5px;color:var(--faint)}
+  .bk .bkcnt{margin-top:4px;display:flex;gap:2px;justify-content:center;min-height:12px;align-items:center}
+  .bk .pip{width:8px;height:8px;border-radius:2px;background:var(--faint);opacity:.35}
+  .bk .pip.on{background:var(--tc);opacity:1}
+  .bk .pip.fb{background:var(--fb);opacity:1}
+  .bk.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);background:rgba(88,166,255,.1)}
+  .bk.req{border-color:var(--add);box-shadow:0 0 0 1px var(--add)}
+  .bk .reqlab{position:absolute;top:-19px;left:50%;transform:translateX(-50%);font-size:8.5px;font-family:var(--mono);
+    color:var(--add);background:rgba(63,185,80,.16);border:1px solid var(--add);border-radius:4px;padding:0 4px;white-space:nowrap}
+  .bk.ell{border:none;background:none;width:auto;align-self:center;color:var(--faint);font-family:var(--mono)}
+  .buckets-meta{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:9px;display:flex;gap:16px;flex-wrap:wrap}
+  .buckets-meta b{color:var(--accent)}
+
+  /* 链表特写：head 指针 → 节点 → 节点 → NULL，节点的 next 就画在数据区里 */
+  .chain-meta{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .chain-meta .bsz{color:var(--tc);font-weight:700}
+  .chain{display:flex;align-items:center;gap:0;flex-wrap:nowrap;overflow-x:auto;padding:34px 4px 22px;min-height:120px}
+  /* head 指针格 */
+  .head{flex:0 0 auto;position:relative}
+  .head .hbox{font-family:var(--mono);font-size:10.5px;font-weight:700;padding:6px 10px;border-radius:7px;
+    border:1px solid var(--tc);background:rgba(63,185,176,.14);color:var(--tc);white-space:nowrap;transition:.3s}
+  .head.fb .hbox{border-color:var(--fb);background:rgba(240,136,62,.14);color:var(--fb)}
+
+  /* 链接箭头 */
+  .arw{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:46px;position:relative}
+  .arw svg{width:46px;height:24px;overflow:visible}
+  .arw .ln{stroke:var(--next);stroke-width:2;fill:none}
+  .arw .hd{fill:var(--next)}
+  .arw.dim .ln{stroke:var(--faint)}.arw.dim .hd{fill:var(--faint)}
+  .arw .albl{position:absolute;top:-13px;left:50%;transform:translateX(-50%);font-size:8px;font-family:var(--mono);color:var(--next);white-space:nowrap}
+
+  /* 节点 = 一块 free 掉的 chunk。label/badge 绝对定位，使节点高度=盒高，便于整行居中 */
+  .node{flex:0 0 auto;transition:.3s;position:relative}
+  .node .nlabel{position:absolute;top:-15px;left:0;right:0;font-family:var(--mono);font-size:9px;color:var(--faint);text-align:center}
+  .node .nbox{width:128px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:rgba(10,14,20,.5);transition:.3s}
+  .node .ntop{display:flex;align-items:center;justify-content:space-between;padding:3px 8px;border-bottom:1px dashed var(--border);
+    font-family:var(--mono);font-size:8.5px;color:var(--faint)}
+  .node .ntop .naddr{color:var(--heap)}
+  /* 数据区：free 后这里放的就是 next 指针 */
+  .node .ndata{padding:9px 8px;font-family:var(--mono);font-size:11px;text-align:center;min-height:44px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.3}
+  .node .ndata .dk{font-size:8px;color:var(--faint)}
+  .node .ndata .dv{font-weight:700}
+  /* 状态着色 */
+  .node.used .nbox{border-color:var(--accent)}
+  .node.used .ndata{background:rgba(88,166,255,.1);color:var(--accent)}
+  .node.freed .nbox{border-color:var(--next);border-style:dashed}
+  .node.freed .ndata{background:rgba(163,113,247,.1)}
+  .node.freed .ndata .dv{color:var(--next)}
+  .node.head-node .nbox{box-shadow:0 0 0 2px var(--tc)}
+  .node.fb-node.head-node .nbox{box-shadow:0 0 0 2px var(--fb)}
+  .node.changed .nbox{box-shadow:0 0 0 2px var(--change);border-color:var(--change)}
+  .node.taken{opacity:0;transform:translateY(-16px) scale(.9)}
+  .node .topbadge{position:absolute;top:-30px;left:50%;transform:translateX(-50%);font-size:8px;font-family:var(--mono);
+    font-weight:700;padding:0 5px;border-radius:4px;white-space:nowrap;z-index:2}
+  .node.head-node .topbadge{background:var(--tc);color:#04130a}
+  .node.fb-node.head-node .topbadge{background:var(--fb);color:#1a0d02}
+
+  /* NULL 终止 */
+  .nullend{flex:0 0 auto;font-family:var(--mono);font-size:11px;color:var(--faint);
+    border:1px dashed var(--border);border-radius:7px;padding:8px 10px;text-align:center}
+  .chain-empty{font-family:var(--mono);font-size:11px;color:var(--faint);font-style:italic;padding:20px;text-align:center;width:100%}
+
+  /* 程序手里持有的已分配块（还没 free，不在任何桶里） */
+  .held{display:flex;gap:8px;flex-wrap:wrap;padding:6px 2px 2px}
+  .held .hb{flex:0 0 auto;width:78px;border:1px solid var(--accent);border-radius:7px;overflow:hidden;background:rgba(88,166,255,.08);transition:.3s}
+  .held .hb .hbtop{font-family:var(--mono);font-size:8px;color:var(--faint);text-align:center;padding:2px 0;border-bottom:1px dashed var(--border)}
+  .held .hb .hbmid{font-family:var(--mono);font-size:10px;color:var(--accent);text-align:center;padding:6px 0;font-weight:700}
+  .held .hb.changed{box-shadow:0 0 0 2px var(--change)}
+
+  /* 叙事 + 图例 */
+  .narr{margin-top:14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 15px;display:flex;gap:13px;align-items:flex-start}
+  .narr .badge{flex:0 0 auto;font-family:var(--mono);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;background:rgba(88,166,255,.16);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
+  .narr .badge.tc{background:rgba(63,185,176,.18);color:var(--tc);border-color:var(--tc)}
+  .narr .badge.fb{background:rgba(240,136,62,.18);color:var(--fb);border-color:var(--fb)}
+  .narr .badge.danger{background:rgba(247,120,186,.16);color:var(--danger);border-color:var(--danger)}
+  .narr .badge.done{background:rgba(63,185,80,.18);color:var(--add);border-color:var(--add)}
+  .narr .text code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
+  .narr .text b.tc{color:var(--tc)}.narr .text b.fb{color:var(--fb)}.narr .text b.next{color:var(--next)}
+  .narr .text b.add{color:var(--add)}.narr .text b.danger{color:var(--danger)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dim);margin-top:12px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">free 完再 malloc 为什么拿回同一块 · tcache / fastbin 空闲链的分配与回收</h1>
+  <p class="sub">按 chunk 大小分桶 · free = 头插（next 写进“尸体”数据区）· malloc = 头摘 · 后进先出 · tcache 满 7 块溢出 fastbin</p>
+  <div class="controls">
+    <button id="reset">⏮ 重置</button>
+    <button id="prev">← 上一步</button>
+    <button id="next" class="primary">下一步 →</button>
+    <button id="auto">▶ 自动</button>
+    <label style="font-size:11px;color:var(--dim)">速度<input type="range" id="speed" min="350" max="2200" value="1200"></label>
+    <span class="step-count" id="counter">0 / 0</span>
+  </div>
+  <div class="layout">
+    <div class="panel">
+      <div class="ttl">当前在执行的代码</div>
+      <div class="bd">
+        <div id="code-bd"></div>
+        <div class="keynote" id="keynote"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ttl">空闲块仓库 · 分桶全景 + 当前桶链表特写</div>
+      <div class="stage" id="stage"></div>
+    </div>
+  </div>
+  <div class="narr">
+    <span class="badge" id="badge">就绪</span>
+    <div class="text" id="narr-text">点「下一步」开始。空闲块不是扔进一个大筐，而是<b class="tc">按 chunk 大小分桶</b>，每桶挂一条单向链表。<code>free</code> 把块<b class="next">头插</b>进对应桶、并把原链表头地址写进这块的数据区当 <code>next</code>；<code>malloc</code> 同大小时<b class="add">头摘</b>第一个 —— 于是拿回的正是刚还回去那块。</div>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--accent)"></i>分桶 / 请求落点</span>
+    <span><i class="dot" style="background:var(--tc)"></i>tcache（线程私有·免锁·每桶7块）</span>
+    <span><i class="dot" style="background:var(--fb)"></i>fastbin（溢出·需加锁）</span>
+    <span><i class="dot" style="background:var(--next)"></i>next 指针（写在数据区里）</span>
+    <span><i class="dot" style="background:var(--change)"></i>本步变化</span>
+  </div>
+</div>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+
+// ── C 源码：一段就把全部机关跑完 ──
+// 分配 9 块同 size → 依次 free（前7进tcache，第8/9溢出fastbin）→ 再 malloc 9 次（先掏tcache再掏fastbin）
+const C_SRC=[
+  '<span class="ctype">void</span> *p[<span class="cnum">9</span>];                        <span class="ccmt">// 9 个指针</span>',
+  '<span class="ckw">for</span> (<span class="ctype">int</span> i=<span class="cnum">0</span>; i&lt;<span class="cnum">9</span>; i++)',
+  '    p[i] = <span class="cfn">malloc</span>(<span class="cnum">16</span>);        <span class="ccmt">// 9 块都拿出来（chunk 32）</span>',
+  '<span class="ckw">for</span> (<span class="ctype">int</span> i=<span class="cnum">0</span>; i&lt;<span class="cnum">9</span>; i++)',
+  '    <span class="cfn">free</span>(p[i]);             <span class="ccmt">// 依次还：0→1→…→8</span>',
+  '<span class="ckw">for</span> (<span class="ctype">int</span> i=<span class="cnum">0</span>; i&lt;<span class="cnum">9</span>; i++)',
+  '    p[i] = <span class="cfn">malloc</span>(<span class="cnum">16</span>);        <span class="ccmt">// 再要回来，看顺序</span>',
+];
+
+// 9 块 chunk 的地址：base + i*0x20（chunk 32，间隔 32 字节）
+const ADDR=['0x4062b0','0x4062d0','0x4062f0','0x406310','0x406330',
+            '0x406350','0x406370','0x406390','0x4063b0'];
+const short=a=>a==null?'NULL':a.slice(0,4)+' '+a.slice(4); // 0x40 62b0
+
+// ── 分桶全景：从 chunk32 起等差 16 ──
+const BUCKETS=[
+  {sz:32,idx:0},{sz:48,idx:1},{sz:64,idx:2},{sz:80,idx:3},
+  {sz:96,idx:4},{sz:112,idx:5},{sz:128,idx:6},
+  {ell:true},
+  {sz:1040,idx:63},
+];
+
+// 链表节点构造：order = [头块, …, 尾块]（head-first）。node.next 指向 order 中下一块的地址。
+function chainNodes(order,opts){
+  opts=opts||{};
+  return order.map((b,k)=>({
+    b, next: k<order.length-1 ? ADDR[order[k+1]] : null,
+    head: k===0,
+    changed: opts.changed!=null && opts.changed===b,
+  }));
+}
+
+// 步骤默认值
+function S(o){return Object.assign({
+  c:0, key:'', badge:'', badgeCls:'',
+  tcOrder:[], fbOrder:[], feature:'tcache', fastOn:false,
+  reqBucket:null, takenAddr:null, done:false, narr:'', held:0,
+},o);}
+
+const KEY_BUCKET='分桶看的是 <b>chunk 大小</b>不是请求字节：请求+8头部，向上对齐16，下限32。<span class="kk">malloc(16)→chunk 32</span>，落 0 号桶。下标 = (chunk−32)/16。';
+const KEY_NEXT='单向链表的 <b>next 指针没有另开内存</b>，直接写进被 free 那块的<b>用户数据区</b>（你写过 42 的地方）。free 了反正没人用，废物利用当链表节点。';
+const KEY_LIFO='<b>free=头插，malloc=头摘</b>，标准的栈 → 后进先出。刚 free 的躺在链表头，下一个同 size 的 malloc 头一个就把它摘走。';
+const KEY_OVF='tcache 每桶<b>最多 7 块</b>。攒满后再 free 的同档块溢出到 <b>fastbin</b>：同样按 chunk 分桶的单链表，但非线程私有所以<b>要加锁</b>、慢一档。';
+
+const STEPS=[];
+// 第一幕：分桶讲解
+STEPS.push(S({c:0,badge:'分桶仓库',key:KEY_BUCKET,reqBucket:0,
+  narr:'空闲块仓库<b class="tc">不是一个大筐，是按 chunk 大小分好的一排桶</b>。每桶串同一档大小、挂一条单向链表。<code>malloc(16)</code> 先算出 chunk 32 → 用 <code>(32−32)/16=0</code> 直接定位 0 号桶，不用遍历。上面这排是桶，下面是 0 号桶的链表特写（现在还空着）。'}));
+
+// 第二幕：malloc × 9，一步一块（桶是空的，从池子新切）
+for(let i=0;i<9;i++){
+  STEPS.push(S({c:2,badge:`malloc p[${i}]`,reqBucket:0,held:i+1,
+    narr:(i===0
+      ?'进入第一个循环 <b>malloc(16) × 9</b>。<b class="tc">桶里现在是空的</b>（没人还过块），libc 只能从内存池新切一块给你。这是<b>第 1 块</b> p[0]，拿到手用着（上面蓝色）。'
+      :i===8
+      ?`第 <b>9</b> 块 p[8] 也切好了。<b>9 块同样大小（chunk 32）全在程序手里用着</b>，桶始终是空的 —— 桶只装「还回来的」块。下一个循环开始逐块 free。`
+      :`循环第 <b>${i+1}</b> 次：又切一块 p[${i}]。桶仍空，已持有 <b>${i+1}</b> 块。`)}));
+}
+
+// 第三幕：free × 9，一步一块（前 7 进 tcache，后 2 溢出 fastbin）
+const tc=[]; const fb=[];
+for(let i=0;i<9;i++){
+  const toFast = i>=7;
+  if(toFast) fb.unshift(i); else tc.unshift(i);
+  const o={c:4,reqBucket:0,held:9-(i+1),tcOrder:tc.slice(),fbOrder:fb.slice(),
+    fastOn: fb.length>0, badge:`free p[${i}]`, badgeCls: toFast?'fb':'tc',
+    feature: toFast?'fast':'tcache'};
+  if(i===0){o.key=KEY_NEXT;
+    o.narr='进入第二个循环 <b class="tc">free(p[0])</b> —— 第一块还回 0 号桶。head 指向它，它的 <code>next</code> 是 <code>NULL</code>（链尾）。<b class="danger">看节点数据区：原本是你写的数据，现在被 libc 拿来当链表节点了</b>。';
+  } else if(i===1){o.key=KEY_NEXT;
+    o.narr='<b class="tc">free(p[1])</b> — <b class="next">头插</b>：p[1] 插到最前成新 head，它的 <code>next</code> 写上原来的头 p[0] 的地址 <code>'+short(ADDR[0])+'</code>，<b class="danger">就写在 p[1] 的数据区里</b>（safe-linking 加扰后存，这里画解扰值）。';
+  } else if(i<7){
+    o.narr=`<b class="tc">free(p[${i}])</b> — 同样头插到最前。链子越串越长，每个新块的 next 指向它前一个入桶的块：<code>head → ${tc.join(' → ')} → NULL</code>。`+(i===6?' 这是<b>第 7 块</b>，tcache 这桶<b>正好装满</b>（上限 7）。':'');
+  } else if(i===7){o.key=KEY_OVF;
+    o.narr='<b class="fb">free(p[7])</b> — tcache 满 7 了，装不下！多出来的块<b class="fb">溢出到 fastbin</b>（下方新亮起的橙色链）。fastbin 同样按 chunk 分桶、同样头插单链表，但<b>非线程私有、操作要先抢锁</b>，慢一档。';
+  } else {
+    o.narr='<b class="fb">free(p[8])</b> — 再溢出一块，头插进 fastbin：<code>head → 8 → 7 → NULL</code>。至此 9 块全还回：<b class="tc">tcache 7 块</b>（6…0）+ <b class="fb">fastbin 2 块</b>（8、7）。两条链各自「后进在头」。';
+  }
+  STEPS.push(S(o));
+}
+
+// 第四幕：malloc × 9，一步一块（先掏 tcache 6..0，再掏 fastbin 8,7）
+for(let i=0;i<9;i++){
+  const fromFast = tc.length===0;
+  const taken = fromFast ? fb.shift() : tc.shift();
+  const o={c:6,reqBucket:0,held:i+1,tcOrder:tc.slice(),fbOrder:fb.slice(),
+    fastOn:true, takenAddr:ADDR[taken], feature: fromFast?'fast':'tcache',
+    badge: fromFast?`malloc → p[${taken}] · fastbin`:`malloc → p[${taken}]`,
+    badgeCls: fromFast?'fb':'tc'};
+  if(i===0){o.key=KEY_LIFO;
+    o.narr='进入第三个循环 <b class="tc">malloc(16)</b>。先翻 tcache（免锁最快）：<b class="add">头摘</b>——摘走链表头第一个，也就是<b>最后还回去那块 6</b>（<code>'+short(ADDR[6])+'</code>），交回程序。head 顺 next 退到 5。<b>这就是「拿回刚还回去那块」的真相</b>。';
+  } else if(!fromFast && tc.length>0){
+    o.narr=`再 <b class="tc">malloc</b> — 头摘 ${taken}。每次都从链表头拿，head 一路顺着 next 往后退。后进先出，像掀一摞盘子最上面那张。`;
+  } else if(!fromFast && tc.length===0){
+    o.narr=`头摘 ${taken} —— <b class="tc">tcache 这桶被掏空了</b>。吐出顺序 6→5→4→3→2→1→0，正好是入桶顺序<b>倒过来</b>。下一次 malloc 得转去 fastbin。`;
+  } else if(fromFast && fb.length>0){
+    o.narr='tcache 空 → 转 <b class="fb">fastbin</b>（这次要先抢锁）。同样头摘：拿走 fastbin 头第一个 <b>8</b>。两层缓存<b>各自后进先出，无缝拼接</b>。';
+  } else {
+    o.narr='最后一次 <b class="fb">malloc</b> 摘走 fastbin 里的 7。两条链全部清空，9 块又都回到程序手里。重新拿回总顺序：<code>6 5 4 3 2 1 0</code>(tcache) + <code>8 7</code>(fastbin) —— 全程严格 LIFO。';
+  }
+  STEPS.push(S(o));
+}
+
+// 收尾
+STEPS.push(S({c:6,badge:'一条 LIFO 链',badgeCls:'done',done:true,reqBucket:0,
+  narr:'串起来就一句话：<b class="tc">每个桶都是一个把死内存自身当链表节点的栈</b>。<b class="next">free 头插</b>（next 写进数据区）+ <b class="add">malloc 头摘</b> = 后进先出，所以 free 完再 malloc 同档大小，拿回的就是刚还那块。'}));
+
+let cur=0,timer=null,autoOn=false;
+const stage=$('stage'),codeBd=$('code-bd');
+
+// ── 代码面板 ──
+function renderCode(cl){
+  codeBd.innerHTML='<pre class="code">'+C_SRC.map((l,i)=>
+    `<span class="cline${i===cl?' active':''}">${l}</span>`).join('')+'</pre>';
+}
+
+// ── 分桶全景 ──
+function bucketsHTML(s){
+  const cells=BUCKETS.map(b=>{
+    if(b.ell) return `<div class="bk ell">···</div>`;
+    const isReq=s.reqBucket===b.idx;
+    let pips='';
+    if(b.idx===0){
+      for(let k=0;k<7;k++) pips+=`<span class="pip${k<s.tcOrder.length?' on':''}"></span>`;
+    }
+    return `<div class="bk${isReq?' req':''}" data-idx="${b.idx}">
+      ${isReq?'<span class="reqlab">malloc(16)→这里</span>':''}
+      <div class="bksz">${b.sz}B</div><div class="bkidx">#${b.idx}</div>
+      <div class="bkcnt">${pips}</div></div>`;
+  }).join('');
+  return `<div class="zone z-buckets"><div class="zh">▤ 分桶全景 · 按 chunk 大小一桶一档<span class="tag">tcache 64 桶 · 等差 16</span></div>
+    <div class="zb">
+      <div class="buckets-meta"><span>下标 = <b>(chunk−32)/16</b></span><span>chunk 32 / 48 / 64 … 等差 16</span><span>0 号桶圆点 = tcache 当前囤了几块（满 7）</span></div>
+      <div class="buckets">${cells}</div></div></div>`;
+}
+
+// ── 单条链表特写 ──
+function chainHTML(order,kind,s){
+  const isFb=kind==='fb';
+  if(!order.length){
+    return `<div class="head${isFb?' fb':''}"><div class="hbox">head</div></div>
+      <div class="arw dim"><svg viewBox="0 0 46 24"><path class="ln" d="M2 12 H36"/><path class="hd" d="M36 7 L46 12 L36 17 Z"/></svg></div>
+      <div class="nullend">NULL</div>`;
+  }
+  const nodes=chainNodes(order);
+  let html=`<div class="head${isFb?' fb':''}"><div class="hbox">head ▶</div></div>`;
+  nodes.forEach((n,k)=>{
+    html+=`<div class="arw"><span class="albl">${k===0?'':'next'}</span>
+      <svg viewBox="0 0 46 24"><path class="ln" d="M2 12 H36"/><path class="hd" d="M36 7 L46 12 L36 17 Z"/></svg></div>`;
+    const nx = n.next?short(n.next):'NULL';
+    html+=`<div class="node freed${isFb?' fb-node':''}${n.head?' head-node':''}${n.changed?' changed':''}">
+      ${n.head?`<span class="topbadge">链表头</span>`:''}
+      <div class="nlabel">原 p[${n.b}]</div>
+      <div class="nbox">
+        <div class="ntop"><span>chunk32</span><span class="naddr">${short(ADDR[n.b])}</span></div>
+        <div class="ndata"><span class="dk">数据区现在存 next ▾</span><span class="dv">${nx}</span></div>
+      </div></div>`;
+  });
+  html+=`<div class="arw dim"><svg viewBox="0 0 46 24"><path class="ln" d="M2 12 H36"/><path class="hd" d="M36 7 L46 12 L36 17 Z"/></svg></div>
+    <div class="nullend">NULL</div>`;
+  return html;
+}
+
+// ── tcache / fastbin 两个链表区 ──
+function tcacheHTML(s){
+  const feat=s.feature==='tcache'?'<span style="color:var(--add);font-size:9px;margin-left:6px">◀ 这次从这里摘</span>':'';
+  const taken=s.feature==='tcache'&&s.takenAddr?`<div style="font-family:var(--mono);font-size:10px;color:var(--add);margin-bottom:6px">头摘 ▶ 返回 <b>${short(s.takenAddr)}</b>（原链表头）给 malloc</div>`:'';
+  return `<div class="zone z-tcache"><div class="zh">▤ tcache · 0 号桶链表（chunk32）${feat}<span class="tag">线程私有 · 免锁 · 上限 7</span></div>
+    <div class="zb">
+      <div class="chain-meta"><span class="bsz">桶[chunk 32]</span><span>head → 节点 → … → NULL，<b style="color:var(--next)">next 就画在每块的数据区里</b></span></div>
+      ${taken}
+      <div class="chain">${chainHTML(s.tcOrder,'tc',s)}</div></div></div>`;
+}
+function fastbinHTML(s){
+  if(!s.fastOn) return '';
+  const feat=s.feature==='fast'?'<span style="color:var(--add);font-size:9px;margin-left:6px">◀ tcache 空了，转这里摘</span>':'';
+  const taken=s.feature==='fast'&&s.takenAddr?`<div style="font-family:var(--mono);font-size:10px;color:var(--add);margin-bottom:6px">头摘 ▶ 返回 <b>${short(s.takenAddr)}</b> 给 malloc（先抢锁）</div>`:'';
+  return `<div class="zone z-fast on"><div class="zh">▤ fastbin · 同档桶（chunk32）${feat}<span class="tag">非线程私有 · 需加锁 · 收 tcache 溢出</span></div>
+    <div class="zb">
+      <div class="chain-meta"><span class="bsz" style="color:var(--fb)">桶[chunk 32]</span><span>tcache 满 7 后溢出到这里，同样头插单链表</span></div>
+      ${taken}
+      <div class="chain">${chainHTML(s.fbOrder,'fb',s)}</div></div></div>`;
+}
+
+// ── 程序持有的已分配块（不在桶里） ──
+function heldHTML(s){
+  if(!s.held) return '';
+  let cells='';
+  for(let k=0;k<s.held;k++) cells+=`<div class="hb"><div class="hbtop">chunk32</div><div class="hbmid">用着</div></div>`;
+  return `<div class="zone" style="box-shadow:0 0 0 1px rgba(88,166,255,.3)"><div class="zh" style="color:var(--accent)">▤ 程序手里的块 · 已分配、不在任何桶里<span class="tag">${s.held} 块在用</span></div>
+    <div class="zb"><div class="held">${cells}</div></div></div>`;
+}
+
+function render(){
+  const s=STEPS[cur];
+  renderCode(s.c);
+  $('keynote').innerHTML=s.key||'<span style="color:var(--faint)">提示：上排是分桶全景，中间是 tcache 0 号桶链表，溢出后下方出现 fastbin 链。</span>';
+  stage.innerHTML=heldHTML(s)+bucketsHTML(s)+tcacheHTML(s)+fastbinHTML(s);
+  const b=$('badge');
+  b.textContent=s.done?'完成 · LIFO':(s.badge||('步骤 '+(cur+1)));
+  b.className='badge '+(s.done?'done':(s.badgeCls||''));
+  $('narr-text').innerHTML=s.narr;
+  $('counter').textContent=(cur+1)+' / '+STEPS.length;
+  $('prev').disabled=cur===0;$('next').disabled=cur===STEPS.length-1;
+}
+
+function go(n){cur=Math.max(0,Math.min(STEPS.length-1,n));render();}
+$('next').onclick=()=>go(cur+1);
+$('prev').onclick=()=>go(cur-1);
+$('reset').onclick=()=>{stopAuto();go(0);};
+function stopAuto(){autoOn=false;clearTimeout(timer);$('auto').textContent='▶ 自动';$('auto').classList.remove('primary');}
+$('auto').onclick=()=>{
+  if(autoOn){stopAuto();return;}
+  autoOn=true;$('auto').textContent='⏸ 暂停';$('auto').classList.add('primary');
+  (function loop(){if(!autoOn)return;if(cur>=STEPS.length-1){stopAuto();return;}go(cur+1);timer=setTimeout(loop,+$('speed').value);})();
+};
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'){go(cur+1);e.preventDefault();}
+  if(e.key==='ArrowLeft'){go(cur-1);e.preventDefault();}
+  if(e.key===' '){$('auto').click();e.preventDefault();}
+});
+render();
+</script>
+</body>
+</html>
