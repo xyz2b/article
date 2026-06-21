@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多线程 malloc 为什么会变慢 · arena → bins 全景：内存池的静态结构与动态变化</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --heap:#3fb9b0; --rodata:#d29922; --next:#a371f7;
+    --tc:#3fb9b0; --fb:#f0883e; --free:#6e7681; --danger:#f778ba;
+    --uns:#d2a8ff; --small:#79c0ff; --large:#56d364; --top:#e3b341; --mmap:#ff7b72;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1860px;margin:0 auto;padding:14px 22px 60px}
+  h1.t{font-size:18px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+
+  /* 控制条 */
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:9px 14px;margin-bottom:10px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:6px 12px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-count{color:var(--dim);font-variant-numeric:tabular-nums;min-width:74px;text-align:center;margin-left:auto}
+  input[type=range]{width:120px;accent-color:var(--accent)}
+  .act-jump{display:flex;gap:5px;flex-wrap:wrap}
+  .act-jump button{padding:5px 9px;font-size:11.5px}
+  .act-jump button.cur{border-color:var(--accent);color:#fff;background:rgba(88,166,255,.14)}
+
+  /* 章节进度条 */
+  .phasebar{display:flex;gap:0;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .phasebar .ph{flex:1;text-align:center;padding:6px 4px;font-size:11px;color:var(--faint);
+    border-right:1px solid var(--border);transition:.2s;cursor:pointer;background:var(--panel)}
+  .phasebar .ph:last-child{border-right:none}
+  .phasebar .ph.on{color:#fff;background:rgba(88,166,255,.16);font-weight:600}
+  .phasebar .ph .pn{font-family:var(--mono);font-size:9px;color:var(--accent);display:block}
+
+  .layout{display:grid;grid-template-columns:340px 1fr;gap:14px;align-items:start}
+  @media(max-width:1080px){.layout{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:8px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+
+  /* 代码面板 */
+  #code-bd{position:relative;max-height:240px;overflow-y:auto;scroll-behavior:smooth;padding:8px 4px}
+  pre.code{margin:0;font-family:var(--mono);font-size:12px;line-height:1.7;overflow-x:auto}
+  .cline{display:block;padding:1px 8px;border-radius:5px;white-space:pre;color:var(--text);transition:.15s}
+  .cline.active{background:rgba(88,166,255,.16);box-shadow:inset 2px 0 0 var(--accent)}
+  .ckw{color:#ff7b72}.ctype{color:#79c0ff}.cnum{color:#a5d6ff}.cfn{color:#d2a8ff}.ccmt{color:var(--faint)}
+  .keynote{margin:0 10px 12px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);font-size:11.5px;color:var(--dim);line-height:1.55}
+  .keynote b{color:var(--next)}
+  .keynote .kk{font-family:var(--mono);color:var(--tc)}
+
+  /* 字段速查（代码面板下方常驻小抄） */
+  .fieldref{margin:0 10px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);overflow:hidden}
+  .fieldref .frh{padding:5px 10px;font-size:10px;color:var(--dim);border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.4px}
+  .fieldref table{width:100%;border-collapse:collapse;font-size:10.5px}
+  .fieldref td{padding:3px 8px;border-bottom:1px solid rgba(40,48,57,.5);vertical-align:top}
+  .fieldref tr:last-child td{border-bottom:none}
+  .fieldref td.k{font-family:var(--mono);white-space:nowrap;width:1%}
+  .fieldref td.v{color:var(--dim)}
+  .fieldref tr.hl td{background:rgba(88,166,255,.12)}
+  .fieldref tr.hl td.k{color:#fff}
+
+  /* 舞台 */
+  .stage{position:relative;padding:14px;display:flex;flex-direction:column;gap:13px;min-height:560px;
+    background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px),repeating-linear-gradient(90deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px);}
+
+  /* 通用 zone（结构盒） */
+  .zone{border:1px solid var(--border);border-radius:10px;background:var(--panel2);position:relative;transition:.3s}
+  .zone .zh{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11.5px;font-weight:700}
+  .zone .zh .tag{margin-left:auto;font-size:9px;font-weight:600;padding:1px 7px;border-radius:5px;border:1px solid var(--border);color:var(--faint);font-style:normal}
+  .zone .zb{padding:10px 12px}
+  .zone.ghost{opacity:.28;filter:grayscale(.4)}
+  .zone.spot{box-shadow:0 0 0 2px var(--accent);border-color:var(--accent)}
+
+  /* 进程外框 */
+  .proc{border:1px dashed var(--faint);border-radius:12px;padding:10px 12px 12px;position:relative}
+  .proc>.plab{position:absolute;top:-9px;left:14px;background:var(--bg);padding:0 8px;font-family:var(--mono);font-size:10px;color:var(--faint)}
+
+  /* 两列：左线程/tcache，右 arena */
+  .cols{display:grid;grid-template-columns:300px 1fr;gap:13px;align-items:start}
+  @media(max-width:1320px){.cols{grid-template-columns:1fr}}
+
+  /* arena 环带 */
+  .ring{display:flex;align-items:center;gap:0;flex-wrap:wrap}
+  .anode{flex:0 0 auto;border:1px solid var(--border);border-radius:9px;background:rgba(10,14,20,.5);
+    padding:7px 11px;min-width:118px;position:relative;transition:.3s}
+  .anode.main{border-color:var(--accent)}
+  .anode.active{box-shadow:0 0 0 2px var(--accent);background:rgba(88,166,255,.1)}
+  .anode .an-t{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--accent)}
+  .anode.thread .an-t{color:var(--heap)}
+  .anode .an-s{font-family:var(--mono);font-size:9px;color:var(--faint);margin-top:2px}
+  .anode .an-lock{position:absolute;top:-9px;right:-7px;font-size:11px;background:var(--bg);border-radius:50%;padding:0 1px}
+  .anode .an-lock.locked{filter:none}.anode .an-lock.open{opacity:.5}
+  .ring .nxt{flex:0 0 auto;width:38px;display:flex;align-items:center;justify-content:center;color:var(--next);font-family:var(--mono);font-size:9px;position:relative}
+  .ring .nxt svg{width:38px;height:18px;overflow:visible}
+  .ring .nxt .ln{stroke:var(--next);stroke-width:1.6;fill:none}.ring .nxt .hd{fill:var(--next)}
+  .ring .loop{flex:0 0 auto;font-family:var(--mono);font-size:9px;color:var(--next);padding:0 6px}
+  .ring-meta{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:9px;display:flex;gap:14px;flex-wrap:wrap}
+  .ring-meta b{color:var(--accent)}
+  .ring-meta b.cap{color:var(--hot)}
+
+  /* tcache 结构体 */
+  .tcs{border:1px solid var(--tc);border-radius:10px;background:rgba(63,185,176,.05);overflow:hidden}
+  .tcs .th{padding:6px 11px;border-bottom:1px solid rgba(63,185,176,.3);font-family:var(--mono);font-size:11px;color:var(--tc);font-weight:700;display:flex;align-items:center;gap:6px}
+  .tcs .th .tag{margin-left:auto;font-size:8.5px;font-weight:600;color:var(--faint);border:1px solid var(--border);border-radius:5px;padding:1px 6px}
+  .tcs .tb{padding:9px 11px}
+  .tcptr{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:9px}
+  .tcptr .pbox{border:1px solid var(--tc);border-radius:6px;padding:3px 8px;color:var(--tc);background:rgba(63,185,176,.12)}
+  .tcptr .arrow{color:var(--tc)}
+  .tc-fields{font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:8px;line-height:1.6}
+  .tc-fields .cf{color:var(--tc)}
+
+  /* tcache 桶网格（缩略，64 桶取一段展示） */
+  .tcgrid{display:flex;gap:5px;flex-wrap:wrap}
+  .tcb{flex:0 0 auto;width:54px;border:1px solid var(--border);border-radius:6px;background:rgba(10,14,20,.4);
+    padding:4px 3px 3px;text-align:center;transition:.25s;position:relative}
+  .tcb .tcb-sz{font-family:var(--mono);font-size:9.5px;font-weight:700;color:var(--text)}
+  .tcb .tcb-ix{font-family:var(--mono);font-size:8px;color:var(--faint)}
+  .tcb .tcb-pips{margin-top:3px;display:flex;gap:1.5px;justify-content:center;flex-wrap:wrap;min-height:9px}
+  .tcb .pip{width:6px;height:6px;border-radius:2px;background:var(--faint);opacity:.3}
+  .tcb .pip.on{background:var(--tc);opacity:1}
+  .tcb .pip.full{background:var(--add)}
+  .tcb.active{border-color:var(--tc);box-shadow:0 0 0 1px var(--tc);background:rgba(63,185,176,.12)}
+  .tcb .tcb-cnt{font-family:var(--mono);font-size:8px;color:var(--tc);margin-top:2px}
+  .tcb.ell{border:none;background:none;color:var(--faint);font-family:var(--mono);align-self:center;width:auto;padding-top:14px}
+
+  /* malloc_state 字段表 */
+  .ms{border:1px solid var(--accent);border-radius:10px;overflow:hidden;background:rgba(88,166,255,.04)}
+  .ms .msh{padding:6px 11px;border-bottom:1px solid rgba(88,166,255,.3);font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:700;display:flex;align-items:center;gap:6px}
+  .ms .msh .tag{margin-left:auto;font-size:8.5px;font-weight:600;color:var(--faint);border:1px solid var(--border);border-radius:5px;padding:1px 6px}
+  .msrow{display:flex;align-items:stretch;border-bottom:1px solid rgba(40,48,57,.7);transition:.2s;cursor:default;position:relative}
+  .msrow:last-child{border-bottom:none}
+  .msrow .mf{flex:0 0 168px;padding:6px 11px;font-family:var(--mono);font-size:11px;font-weight:600;display:flex;align-items:center;gap:6px;border-right:1px solid rgba(40,48,57,.7)}
+  .msrow .mb{flex:0 0 44px;padding:6px 4px;font-family:var(--mono);font-size:9px;color:var(--faint);text-align:right;border-right:1px solid rgba(40,48,57,.7);display:flex;align-items:center;justify-content:flex-end}
+  .msrow .md{flex:1;padding:6px 11px;font-size:10.5px;color:var(--dim);display:flex;align-items:center}
+  .msrow.hl{background:rgba(88,166,255,.13)}
+  .msrow.hl .mf{color:#fff}
+  .msrow .mf .ic{font-size:11px}
+  .msrow.f-mutex .mf{color:var(--danger)}
+  .msrow.f-fast .mf{color:var(--fb)}
+  .msrow.f-uns .mf{color:var(--uns)}
+  .msrow.f-small .mf{color:var(--small)}
+  .msrow.f-large .mf{color:var(--large)}
+  .msrow.f-top .mf{color:var(--top)}
+  .msrow.f-next .mf{color:var(--next)}
+  .msrow .pulse{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9px;font-family:var(--mono);
+    padding:1px 6px;border-radius:5px;background:var(--change);color:#1a1400;font-weight:700;white-space:nowrap}
+
+  /* 链表/桶内容特写区 */
+  .detail{border:1px solid var(--border);border-radius:10px;background:var(--panel2);transition:.3s}
+  .detail .dh{padding:6px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .detail .dh .tag{margin-left:auto;font-size:9px;font-weight:600;padding:1px 7px;border-radius:5px;border:1px solid var(--border);color:var(--faint)}
+  .detail .db{padding:12px;overflow-x:auto}
+  .detail.empty .db{color:var(--faint);font-style:italic;font-family:var(--mono);font-size:11px;text-align:center;padding:18px}
+
+  /* 链表：head → node → node → NULL */
+  .chain{display:flex;align-items:center;gap:0;flex-wrap:nowrap;padding:30px 4px 16px;min-height:104px}
+  .head{flex:0 0 auto}
+  .head .hbox{font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 9px;border-radius:7px;
+    border:1px solid var(--faint);background:rgba(255,255,255,.03);color:var(--dim);white-space:nowrap;transition:.3s}
+  .arw{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:42px;position:relative}
+  .arw svg{width:42px;height:22px;overflow:visible}
+  .arw .ln{stroke:var(--next);stroke-width:2;fill:none}.arw .hd{fill:var(--next)}
+  .arw.dim .ln{stroke:var(--faint)}.arw.dim .hd{fill:var(--faint)}
+  .arw .albl{position:absolute;top:-12px;left:50%;transform:translateX(-50%);font-size:8px;font-family:var(--mono);color:var(--next);white-space:nowrap}
+  .arw.bk{transform:rotate(180deg)}.arw.bk .albl{transform:translateX(-50%) rotate(180deg);top:auto;bottom:-12px}
+
+  .node{flex:0 0 auto;transition:.35s;position:relative}
+  .node .nlabel{position:absolute;top:-15px;left:0;right:0;font-family:var(--mono);font-size:8.5px;color:var(--faint);text-align:center}
+  .node .nbox{width:120px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:rgba(10,14,20,.5);transition:.3s}
+  .node .ntop{display:flex;align-items:center;justify-content:space-between;padding:2px 7px;border-bottom:1px dashed var(--border);font-family:var(--mono);font-size:8px;color:var(--faint)}
+  .node .ntop .naddr{color:var(--heap)}
+  .node .ndata{padding:7px;font-family:var(--mono);font-size:10px;text-align:center;min-height:38px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.25}
+  .node .ndata .dk{font-size:7.5px;color:var(--faint)}
+  .node .ndata .dv{font-weight:700}
+  .node.used .nbox{border-color:var(--accent)}
+  .node.used .ndata{background:rgba(88,166,255,.1);color:var(--accent)}
+  .node.freed .nbox{border-color:var(--next);border-style:dashed}
+  .node.freed .ndata{background:rgba(163,113,247,.1)}
+  .node.freed .ndata .dv{color:var(--next)}
+  .node.head-node .nbox{box-shadow:0 0 0 2px currentColor}
+  .node.changed .nbox{box-shadow:0 0 0 2px var(--change);border-color:var(--change)}
+  .node.taken{opacity:0;transform:translateY(-14px) scale(.9)}
+  .node .topbadge{position:absolute;top:-29px;left:50%;transform:translateX(-50%);font-size:8px;font-family:var(--mono);font-weight:700;padding:0 5px;border-radius:4px;white-space:nowrap;z-index:2;background:var(--change);color:#1a1400}
+  .nullend{flex:0 0 auto;font-family:var(--mono);font-size:10px;color:var(--faint);border:1px dashed var(--border);border-radius:7px;padding:7px 9px}
+
+  /* chunk 解剖图 */
+  .anat{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  .chunkbox{flex:0 0 auto;width:230px;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-family:var(--mono);font-size:10px}
+  .chunkbox .cseg{padding:6px 9px;border-bottom:1px solid var(--border);position:relative}
+  .chunkbox .cseg:last-child{border-bottom:none}
+  .chunkbox .cseg .cs-k{color:var(--accent);font-weight:700}
+  .chunkbox .cseg .cs-d{color:var(--faint);font-size:8.5px;margin-top:1px}
+  .chunkbox .cseg.prev{background:rgba(110,118,129,.08)}
+  .chunkbox .cseg.size{background:rgba(88,166,255,.08)}
+  .chunkbox .cseg.data{background:rgba(63,185,176,.06);min-height:46px}
+  .chunkbox .cseg .uptr{position:absolute;right:-4px;top:50%;transform:translateX(100%) translateY(-50%);font-size:8.5px;color:var(--add);white-space:nowrap}
+  .anat .flagbox{flex:1;min-width:240px;font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.7}
+  .anat .flagbox .bits{font-size:13px;color:var(--text);letter-spacing:1px;margin:4px 0}
+  .anat .flagbox .fl{color:var(--hot)}
+  .anat .flagbox b{color:var(--accent)}
+
+  /* held 块 */
+  .held{display:flex;gap:7px;flex-wrap:wrap}
+  .held .hb{flex:0 0 auto;width:64px;border:1px solid var(--accent);border-radius:6px;overflow:hidden;background:rgba(88,166,255,.08);transition:.3s}
+  .held .hb .hbtop{font-family:var(--mono);font-size:7.5px;color:var(--faint);text-align:center;padding:2px 0;border-bottom:1px dashed var(--border)}
+  .held .hb .hbmid{font-family:var(--mono);font-size:9px;color:var(--accent);text-align:center;padding:4px 0;font-weight:700}
+  .held .hb.changed{box-shadow:0 0 0 2px var(--change)}
+  .held .hb.ghost{opacity:.3;border-style:dashed}
+
+  /* 吞吐对比小条 */
+  .perf{display:flex;gap:14px;flex-wrap:wrap;margin-top:4px}
+  .perf .pcard{flex:1;min-width:150px;border:1px solid var(--border);border-radius:8px;padding:8px 11px;background:rgba(10,14,20,.4)}
+  .perf .pcard .pl{font-size:10px;color:var(--dim)}
+  .perf .pcard .pv{font-family:var(--mono);font-size:16px;font-weight:700;margin-top:3px}
+  .perf .pcard.good .pv{color:var(--add)}
+  .perf .pcard.bad .pv{color:var(--danger)}
+  .perf .pcard .pbar{height:6px;border-radius:3px;background:var(--border);margin-top:6px;overflow:hidden}
+  .perf .pcard .pbar>i{display:block;height:100%;border-radius:3px}
+  .perf .pcard.good .pbar>i{background:var(--add)}
+  .perf .pcard.bad .pbar>i{background:var(--danger)}
+
+  /* 叙事 + 图例 */
+  .narr{margin-top:13px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 15px;display:flex;gap:13px;align-items:flex-start}
+  .narr .badge{flex:0 0 auto;font-family:var(--mono);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;background:rgba(88,166,255,.16);color:var(--accent);border:1px solid var(--accent);white-space:nowrap}
+  .narr .badge.tc{background:rgba(63,185,176,.18);color:var(--tc);border-color:var(--tc)}
+  .narr .badge.fb{background:rgba(240,136,62,.18);color:var(--fb);border-color:var(--fb)}
+  .narr .badge.uns{background:rgba(210,168,255,.16);color:var(--uns);border-color:var(--uns)}
+  .narr .badge.danger{background:rgba(247,120,186,.16);color:var(--danger);border-color:var(--danger)}
+  .narr .badge.done{background:rgba(63,185,80,.18);color:var(--add);border-color:var(--add)}
+  .narr .text{flex:1}
+  .narr .text code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
+  .narr .text b.tc{color:var(--tc)}.narr .text b.fb{color:var(--fb)}.narr .text b.next{color:var(--next)}
+  .narr .text b.add{color:var(--add)}.narr .text b.danger{color:var(--danger)}.narr .text b.uns{color:var(--uns)}
+  .narr .text b.small{color:var(--small)}.narr .text b.large{color:var(--large)}.narr .text b.top{color:var(--top)}
+  .legend{display:flex;gap:13px;flex-wrap:wrap;font-size:10.5px;color:var(--dim);margin-top:11px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">多线程 malloc 为什么会变慢 · arena → bins 全景</h1>
+  <p class="sub">内存池的<b style="color:var(--accent)">全部静态结构</b>（归属关系 · 指针指向 · 每个字段的意义）+ <b style="color:var(--add)">malloc / free 对它的动态改写</b> · glibc 2.36 实测</p>
+  <div class="controls">
+    <button id="reset">⏮ 重置</button>
+    <button id="prev">← 上一步</button>
+    <button id="next" class="primary">下一步 →</button>
+    <button id="auto">▶ 自动</button>
+    <label style="font-size:11px;color:var(--dim)">速度<input type="range" id="speed" min="650" max="2400" value="1300"></label>
+    <span class="step-count" id="counter">0 / 0</span>
+  </div>
+  <div class="phasebar" id="phasebar"></div>
+  <div class="layout">
+    <div class="panel">
+      <div class="ttl">当前在执行的代码 / 操作</div>
+      <div id="code-bd"></div>
+      <div class="keynote" id="keynote"></div>
+      <div class="fieldref" id="fieldref"></div>
+    </div>
+    <div class="panel">
+      <div class="ttl">内存池全景 · 静态结构 + 动态变化</div>
+      <div class="stage" id="stage"></div>
+    </div>
+  </div>
+  <div class="narr">
+    <span class="badge" id="badge">就绪</span>
+    <div class="text" id="narr-text"></div>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--accent)"></i>arena / malloc_state（账本）</span>
+    <span><i class="dot" style="background:var(--tc)"></i>tcache（线程私有·免锁）</span>
+    <span><i class="dot" style="background:var(--fb)"></i>fastbin</span>
+    <span><i class="dot" style="background:var(--uns)"></i>unsorted</span>
+    <span><i class="dot" style="background:var(--small)"></i>small</span>
+    <span><i class="dot" style="background:var(--large)"></i>large</span>
+    <span><i class="dot" style="background:var(--top)"></i>top chunk</span>
+    <span><i class="dot" style="background:var(--next)"></i>指针（next / fd / bk）</span>
+    <span><i class="dot" style="background:var(--change)"></i>本步变化</span>
+  </div>
+</div>
+<style>
+  /* ── 第二版补充样式：连贯程序 + 全池常驻 ── */
+  .pool-list{display:flex;flex-direction:column;gap:7px}
+  .prow{border:1px solid var(--border);border-radius:8px;background:rgba(10,14,20,.4);transition:.25s;overflow:hidden}
+  .prow .prh{display:flex;align-items:center;gap:7px;padding:5px 10px;font-family:var(--mono);font-size:10.5px;font-weight:700}
+  .prow .prh .pcount{margin-left:auto;font-size:9px;color:var(--faint);font-weight:400}
+  .prow .prh .lock{font-size:10px}
+  .prow .chips{display:flex;gap:4px;flex-wrap:wrap;padding:0 10px 8px}
+  .prow .chips:empty{display:none}
+  .chip{font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:5px;border:1px solid var(--border);background:rgba(255,255,255,.03);color:var(--dim);white-space:nowrap}
+  .chip.fresh{box-shadow:0 0 0 1px var(--change);border-color:var(--change);color:#fff}
+  .prow.fb .prh{color:var(--fb)} .prow.fb.act{box-shadow:0 0 0 1px var(--fb);background:rgba(240,136,62,.08)}
+  .prow.uns .prh{color:var(--uns)} .prow.uns.act{box-shadow:0 0 0 1px var(--uns);background:rgba(210,168,255,.08)}
+  .prow.small .prh{color:var(--small)} .prow.small.act{box-shadow:0 0 0 1px var(--small);background:rgba(121,192,255,.08)}
+  .prow.large .prh{color:var(--large)} .prow.large.act{box-shadow:0 0 0 1px var(--large);background:rgba(86,211,100,.08)}
+  .prow.top .prh{color:var(--top)} .prow.top.act{box-shadow:0 0 0 1px var(--top);background:rgba(227,179,65,.08)}
+  .prow.mmap .prh{color:var(--mmap)} .prow.mmap.act{box-shadow:0 0 0 1px var(--mmap);background:rgba(255,123,114,.08)}
+  .prow .chip.empty{opacity:.4;font-style:italic}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px;align-items:start}
+  @media(max-width:1340px){.grid2{grid-template-columns:1fr}}
+  /* 三列：tcache | malloc_state bins | 物理内存(brk堆+mmap) */
+  .grid3{display:grid;grid-template-columns:1fr 1.15fr 0.95fr;gap:11px;align-items:stretch}
+  @media(max-width:1340px){.grid3{grid-template-columns:1fr 1fr}}
+  @media(max-width:980px){.grid3{grid-template-columns:1fr}}
+  /* 物理内存列：撑满整行高度，mmap 推到底部填满下方空间 */
+  .heapcol{display:flex;flex-direction:column;height:100%}
+  .heapcol .mmapbox{margin-top:auto}
+  /* ── 物理 brk 堆竖条（top 指针在这里真实上移）── */
+  .heapbar{border:1px solid var(--top);border-radius:9px;background:rgba(227,179,65,.04);overflow:hidden;transition:.3s;display:flex;flex-direction:column}
+  .heapbar.spot{box-shadow:0 0 0 2px var(--top)}
+  .heapbar .brkline,.heapbar .baseline{font-family:var(--mono);font-size:9px;color:var(--faint);padding:4px 9px;display:flex;justify-content:space-between;gap:6px;border-bottom:1px dashed var(--border)}
+  .heapbar .baseline{border-bottom:none;border-top:1px dashed var(--border)}
+  .heapbar .wild{background:repeating-linear-gradient(135deg,rgba(227,179,65,.10) 0 7px,rgba(227,179,65,.03) 7px 14px);padding:9px;text-align:center}
+  .heapbar .wild .wlabel{font-family:var(--mono);font-size:9.5px;color:var(--top);line-height:1.45}
+  .heapbar .topline{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;font-weight:700;color:var(--top);
+    padding:5px 9px;background:rgba(227,179,65,.13);border-top:1px solid var(--top);border-bottom:1px solid var(--top);position:relative}
+  .heapbar .topline .taddr{color:#fff}
+  .heapbar .topline .tarrow{margin-left:auto;font-size:9px;color:#1a1400;background:var(--change);padding:1px 6px;border-radius:5px;animation:landPulse .8s ease}
+  .heapbar .topline .topbadge2{margin-left:6px;font-size:9px;color:#062b06;background:var(--add);padding:1px 6px;border-radius:5px}
+  .heapbar .hchunk{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;padding:5px 9px;border-bottom:1px solid rgba(40,48,57,.6);transition:.3s}
+  .heapbar .hchunk:last-of-type{border-bottom:none}
+  .heapbar .hchunk .hcl{font-weight:700;color:var(--accent);min-width:30px}
+  .heapbar .hchunk .hca{color:var(--heap)}
+  .heapbar .hchunk .hcs{margin-left:auto;color:var(--dim)}
+  .heapbar .hchunk.fresh{box-shadow:inset 0 0 0 2px var(--change);background:rgba(187,128,9,.12)}
+  .heapbar .hmore{font-family:var(--mono);font-size:8.5px;color:var(--faint);text-align:center;padding:5px 9px;font-style:italic}
+  .heapbar .hempty{font-family:var(--mono);font-size:9.5px;color:var(--faint);text-align:center;padding:14px;font-style:italic}
+  /* mmap 直通区 */
+  .mmapbox{margin-top:10px;border:1px solid var(--mmap);border-radius:9px;background:rgba(255,123,114,.05);overflow:hidden;transition:.3s}
+  .mmapbox.spot{box-shadow:0 0 0 2px var(--mmap)}
+  .mmapbox .mmh{display:flex;justify-content:space-between;gap:6px;font-family:var(--mono);font-size:9.5px;color:var(--mmap);font-weight:700;padding:5px 9px;border-bottom:1px solid rgba(255,123,114,.3)}
+  .mmapbox .mmb{padding:8px 9px}
+  .mmapbox .mmchip{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;padding:5px 8px;border:1px solid var(--mmap);border-radius:6px;background:rgba(255,123,114,.08);margin-bottom:6px}
+  .mmapbox .mmchip .hcl{font-weight:700;color:var(--mmap);min-width:24px}
+  .mmapbox .mmchip .hca{color:var(--heap)}
+  .mmapbox .mmchip .hcs{margin-left:auto;color:var(--dim)}
+  .mmapbox .mmchip.fresh{box-shadow:0 0 0 2px var(--change)}
+  .mmapbox .mmnote{font-size:9px;color:var(--faint);line-height:1.5;font-family:var(--mono)}
+  .colhead{font-family:var(--mono);font-size:10px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px;display:flex;align-items:center;gap:6px}
+  .colhead .lk{margin-left:auto;font-size:10px}
+  /* 焦点链特写区标题色随 kind */
+  .focuswrap{margin-top:2px}
+  /* 程序源码面板更高 */
+  #code-bd{max-height:330px}
+  .cline.dimmed{opacity:.32}
+  .seclabel{display:block;padding:2px 8px;margin-top:3px;color:var(--add);font-weight:700;border-radius:5px}
+  /* op 提示行 */
+  .opline{font-family:var(--mono);font-size:11px;color:var(--add);margin:0 10px 10px;padding:7px 10px;border:1px dashed var(--add);border-radius:7px;background:rgba(63,185,80,.06)}
+  .opline.take{color:var(--accent);border-color:var(--accent);background:rgba(88,166,255,.06)}
+  .opline b{color:#fff}
+  /* op 方向角标：取出 / 放入 */
+  .opline .dir{font-weight:700;margin-right:9px;padding:1px 8px;border-radius:5px;font-size:10.5px}
+  .opline .dir.take{color:var(--accent);border:1px solid var(--accent);background:rgba(88,166,255,.1)}
+  .opline .dir.put{color:var(--add);border:1px solid var(--add);background:rgba(63,185,80,.1)}
+
+  /* ── 第三版：飞行动画层（让 chunk「看得见地移动」）── */
+  #flight{position:fixed;inset:0;pointer-events:none;z-index:1000;overflow:visible}
+  .flying{position:fixed;z-index:1001;pointer-events:none;box-sizing:border-box;margin:0!important;
+    transform-origin:top left;will-change:transform;box-shadow:0 3px 10px rgba(0,0,0,.4)}
+  .flying.fresh{box-shadow:0 0 0 2px var(--change)}
+  .flying.despawn{background:rgba(163,113,247,.22);border:1px solid var(--next);border-radius:6px}
+  /* 新块「长出来」（堆里新切 / arena 新建 / 归类落桶） */
+  @keyframes spawnIn{from{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}
+  .spawn-in{animation:spawnIn .5s cubic-bezier(.34,1.32,.5,1) both}
+  /* 落点容器一次性脉冲：强化「块落到这里了」 */
+  @keyframes landPulse{0%{box-shadow:0 0 0 0 rgba(63,185,80,0)}
+    28%{box-shadow:0 0 0 2px var(--add),0 0 16px rgba(63,185,80,.55)}
+    100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+  .landing{animation:landPulse .75s ease}
+  @media(prefers-reduced-motion:reduce){
+    .flying,.spawn-in,.landing{animation:none!important;transition:none!important}
+  }
+</style>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+
+/* ═══════════════════════ 完整源码（一段连贯程序 A→H，含分节标签） ═══════════════════════ */
+// 每行：{t:html, sec:章节字母或null}
+const SRC=[
+ // ── 子线程函数体 ──
+ {t:'<span class="ccmt">// 子线程跑这个函数（和主线程并发）</span>'},
+ {t:'<span class="ctype">void</span> *<span class="cfn">worker</span>(<span class="ctype">void</span> *_){',id:'wk-head'},
+ {t:'  <span class="ctype">void</span> *p = <span class="cfn">malloc</span>(<span class="cnum">64</span>); <span class="ccmt">// ← 子线程首次 malloc，触发新建 arena 1</span>',id:'wk-malloc'},
+ {t:'  <span class="cfn">memset</span>(p, <span class="cnum">0xff</span>, <span class="cnum">64</span>);',id:'wk-use'},
+ {t:'  <span class="cfn">free</span>(p); <span class="ccmt">// ← 还回去：进子线程自己的 tcache（不碰主线程）</span>',id:'wk-free'},
+ {t:'  <span class="cfn">pthread_barrier_wait</span>(&amp;barr); <span class="ccmt">// 和主线程对齐，确保两 arena 同时存在</span>',id:'wk-barr'},
+ {t:'  <span class="ckw">return</span> <span class="cnum">0</span>; <span class="ccmt">// 子线程到此结束，之后只剩主线程</span>',id:'wk-end'},
+ {t:'}'},
+ {t:''},
+ {t:'<span class="ckw">int</span> <span class="cfn">main</span>(<span class="ctype">void</span>){'},
+ {t:'  <span class="ccmt">/* A. 子线程首次 malloc → 新建第二个 arena（并发段）*/</span>',sec:'A'},
+ {t:'  <span class="cfn">pthread_create</span>(&amp;t, <span class="cnum">0</span>, worker, <span class="cnum">0</span>); <span class="ccmt">// 启动子线程</span>',id:'a-create',sec:'A'},
+ {t:'  <span class="cfn">pthread_barrier_wait</span>(&amp;barr);         <span class="ccmt">// 此刻主+子两线程并发</span>',id:'a-barr',sec:'A'},
+ {t:'  <span class="cfn">pthread_join</span>(t, <span class="cnum">0</span>);                  <span class="ccmt">// 等子线程结束 → 下面 B~H 单主线程</span>',id:'a-join',sec:'A'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* B. tcache：放进去再拿回同一块（单主线程）*/</span>',sec:'B'},
+ {t:'  p = <span class="cfn">malloc</span>(<span class="cnum">16</span>); <span class="cfn">free</span>(p); q = <span class="cfn">malloc</span>(<span class="cnum">16</span>); <span class="ccmt">// q==p</span>',id:'b-main'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* C. fastbin：满 7 溢出，再取回 */</span>',sec:'C'},
+ {t:'  <span class="ckw">for</span>(i=<span class="cnum">0</span>;i&lt;<span class="cnum">9</span>;i++) b[i]=<span class="cfn">malloc</span>(<span class="cnum">16</span>);',id:'c-malloc'},
+ {t:'  <span class="ckw">for</span>(i=<span class="cnum">0</span>;i&lt;<span class="cnum">9</span>;i++) <span class="cfn">free</span>(b[i]); <span class="ccmt">// 7→tcache, 2→fastbin</span>',id:'c-free'},
+ {t:'  <span class="ckw">for</span>(i=<span class="cnum">0</span>;i&lt;<span class="cnum">9</span>;i++) g[i]=<span class="cfn">malloc</span>(<span class="cnum">16</span>); <span class="ccmt">// 先掏tcache后fastbin</span>',id:'c-take'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* F. large bin：归类 + best-fit 切分（趁堆干净先做）*/</span>',sec:'F'},
+ {t:'  L1=<span class="cfn">malloc</span>(<span class="cnum">1500</span>); <span class="cfn">malloc</span>(<span class="cnum">100</span>); L2=<span class="cfn">malloc</span>(<span class="cnum">2500</span>); <span class="cfn">malloc</span>(<span class="cnum">100</span>);',id:'f-malloc'},
+ {t:'  <span class="cfn">free</span>(L1); <span class="cfn">free</span>(L2);          <span class="ccmt">// 两块进 unsorted</span>',id:'f-free'},
+ {t:'  <span class="cfn">malloc</span>(<span class="cnum">5000</span>);              <span class="ccmt">// 遍历 unsorted → L1/L2 归类进 large bin</span>',id:'f-sort'},
+ {t:'  qq=<span class="cfn">malloc</span>(<span class="cnum">2000</span>);           <span class="ccmt">// best-fit 选 L2(2512) 切分</span>',id:'f-split'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* D. unsorted：相邻块 free 时 consolidate 合并 */</span>',sec:'D'},
+ {t:'  a1=<span class="cfn">malloc</span>(<span class="cnum">2000</span>); a2=<span class="cfn">malloc</span>(<span class="cnum">2000</span>); <span class="cfn">malloc</span>(<span class="cnum">2000</span>);<span class="ccmt">//守卫</span>',id:'d-malloc'},
+ {t:'  <span class="cfn">free</span>(a1); <span class="cfn">free</span>(a2);          <span class="ccmt">// a2 与 a1 相邻 → 合并成一块</span>',id:'d-free'},
+ {t:'  bg=<span class="cfn">malloc</span>(<span class="cnum">4000</span>);           <span class="ccmt">// 单块装不下，拿回合并块 a1</span>',id:'d-take'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* E. small bin：归类 + 复用 */</span>',sec:'E'},
+ {t:'  <span class="ckw">for</span>(i=<span class="cnum">0</span>;i&lt;<span class="cnum">10</span>;i++) sm[i]=<span class="cfn">malloc</span>(<span class="cnum">150</span>);<span class="ccmt">//chunk160</span>',id:'e-malloc'},
+ {t:'  <span class="ckw">for</span>(i=<span class="cnum">0</span>;i&lt;<span class="cnum">10</span>;i++) <span class="cfn">free</span>(sm[i]);  <span class="ccmt">// 7→tcache, 3→unsorted</span>',id:'e-free'},
+ {t:'  <span class="cfn">malloc</span>(<span class="cnum">500</span>);               <span class="ccmt">// 触发归类 → chunk160 进 small bin</span>',id:'e-sort'},
+ {t:'  <span class="ckw">for</span>(i=<span class="cnum">0</span>;i&lt;<span class="cnum">7</span>;i++) <span class="cfn">malloc</span>(<span class="cnum">150</span>);   <span class="ccmt">// 掏空 tcache 桶</span>',id:'e-drain'},
+ {t:'  fs=<span class="cfn">malloc</span>(<span class="cnum">150</span>);           <span class="ccmt">// 这次从 small bin 摘</span>',id:'e-take'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* G. top chunk：所有 bin 落空，从堆顶荒地切 */</span>',sec:'G'},
+ {t:'  fr=<span class="cfn">malloc</span>(<span class="cnum">60000</span>);          <span class="ccmt">// 从 top 切，brk 扩堆</span>',id:'g-malloc'},
+ {t:'',},
+ {t:'  <span class="ccmt">/* H. mmap 直通：≥128KB 绕过整个池子 */</span>',sec:'H'},
+ {t:'  hu=<span class="cfn">malloc</span>(<span class="cnum">200000</span>);         <span class="ccmt">// 直接问内核要，hblks 0→1</span>',id:'h-malloc'},
+ {t:'  <span class="ckw">return</span> <span class="cnum">0</span>;'},
+ {t:'}'},
+];
+
+/* ═══════════════════════ 地址工具（用实测偏移，base=0x405290 仅为展示） ═══════════════════════ */
+const BASE=0x405290;
+const hx=off=>'0x'+(BASE+off).toString(16);
+const sh=a=>a==null?'NULL':a;            // 地址展示
+// chunk 工厂：{off, sz, label} → 唯一 key 用 off
+function CK(off,sz,label){return {off,addr:hx(off),sz,label};}
+// 本步是否「刚变化」：单块 _fresh 或本步显式给的多块 freshList
+const isFresh=(s,addr)=>s.fresh===addr||(s.freshList&&s.freshList.indexOf(addr)>=0);
+// 字节量友好展示
+const fmtB=n=>n>=1024?(n/1024).toFixed(n>=10240?0:1)+' KB':n+' B';
+
+/* ═══════════════════════ 章节定义 ═══════════════════════ */
+const SECS=[
+ {k:'A',t:'第二个 arena'},
+ {k:'B',t:'tcache 放/取'},
+ {k:'C',t:'fastbin 溢出'},
+ {k:'F',t:'large 切分'},
+ {k:'D',t:'unsorted 合并'},
+ {k:'E',t:'small 复用'},
+ {k:'G',t:'top 切'},
+ {k:'H',t:'mmap 直通'},
+];
+
+/* ═══════════════════════ world 状态模型 + 逐步快照 ═══════════════════════ */
+// 每个 chunk = {addr, sz, label}。池子按 head-first 数组存。
+const world={
+  arenaCount:1, locked:false,
+  tcache:{},          // bucketIdx -> [chunk,...]（head 在 [0]）
+  fastbin:{},         // slotIdx   -> [chunk,...]
+  unsorted:[],        // [chunk,...]
+  small:{},           // bucketIdx -> [chunk,...]
+  large:[],           // [chunk,...]（按大小降序；简化为单列，标注 size）
+  mmap:[],            // mmap 区块（高地址，绕过 arena）
+  held:[],            // 程序持有（主线程）
+  // ── 物理 brk 堆：top 指针只增不减（高水位），从 wilderness 切新块 ──
+  heap:{top:0, brk:0x6000, grew:false, carved:[]},  // carved=最近从 top 切出的块（滚动窗口，低→高）
+  // ── 子线程并发态（仅 A 段用）──
+  thread2:false,      // 子线程是否活着
+  t2tcache:[],        // 子线程自己的 tcache（arena 1，独立）
+  t2held:[],          // 子线程持有的块
+};
+const tcIdx=sz=>(sz-32)/16;          // tcache/small 桶下标算法（仅展示）
+function clone(w){
+  const c={arenaCount:w.arenaCount,locked:w.locked,unsorted:w.unsorted.slice(),
+    large:w.large.slice(),mmap:w.mmap.slice(),held:w.held.slice(),
+    tcache:{},fastbin:{},small:{},
+    heap:{top:w.heap.top,brk:w.heap.brk,grew:w.heap.grew,carved:w.heap.carved.slice()},
+    thread2:w.thread2,t2tcache:w.t2tcache.slice(),t2held:w.t2held.slice()};
+  for(const k in w.tcache)c.tcache[k]=w.tcache[k].slice();
+  for(const k in w.fastbin)c.fastbin[k]=w.fastbin[k].slice();
+  for(const k in w.small)c.small[k]=w.small[k].slice();
+  return c;
+}
+
+const STEPS=[];
+let _fresh=null;   // 本步"刚变化"的 chunk addr（高亮）
+let _prevTop=0;    // 上一步结束时的 top 偏移（用于算本步 top 上移了多少）
+function step(o){
+  const topDelta=world.heap.top-_prevTop;   // 本步 top 净上移字节数
+  STEPS.push(Object.assign({
+    sec:o.sec, cl:o.cl, focus:o.focus||'', op:o.op||'', opKind:o.opKind||'',
+    badge:o.badge||'', badgeCls:o.badgeCls||'', narr:o.narr||'', key:o.key||'',
+    fresh:_fresh, freshList:o.freshList||null, topDelta,
+    arenaRing:o.arenaRing||null, active:o.active||'main',
+    w:clone(world),
+  }));
+  _fresh=null;
+  _prevTop=world.heap.top;
+  world.heap.grew=false;
+}
+
+/* ── world 操作原语（直接对应 glibc 行为） ── */
+function held_add(ck){world.held.push(ck);_fresh=ck.addr;}
+function held_take(addr){const i=world.held.findIndex(c=>c.addr===addr);if(i>=0)world.held.splice(i,1);}
+function tc_push(ck){const b=tcIdx(ck.sz);(world.tcache[b]=world.tcache[b]||[]).unshift(ck);_fresh=ck.addr;}
+function tc_pop(sz){const b=tcIdx(sz);const a=world.tcache[b]||[];const ck=a.shift();if(ck)_fresh=ck.addr;return ck;}
+function tc_count(sz){return (world.tcache[tcIdx(sz)]||[]).length;}
+function fb_push(ck){const b=tcIdx(ck.sz);(world.fastbin[b]=world.fastbin[b]||[]).unshift(ck);_fresh=ck.addr;}
+function fb_pop(sz){const b=tcIdx(sz);const a=world.fastbin[b]||[];const ck=a.shift();if(ck)_fresh=ck.addr;return ck;}
+function uns_push(ck){world.unsorted.unshift(ck);_fresh=ck.addr;}
+function uns_removeBig(){}  // 占位
+function small_push(ck){const b=tcIdx(ck.sz);(world.small[b]=world.small[b]||[]).push(ck);_fresh=ck.addr;}
+function small_popTail(sz){const b=tcIdx(sz);const a=world.small[b]||[];const ck=a.pop();if(ck)_fresh=ck.addr;return ck;}
+// 从 wilderness（top）切一块新 chunk：top 指针上移，必要时 brk 把 program break 往高地址推
+function carveTop(sz,label){
+  const ck=CK(world.heap.top,sz,label);
+  ck.fromTop=true;
+  world.heap.carved.push(ck);
+  if(world.heap.carved.length>12) world.heap.carved.shift();   // 滚动窗口，保持可读
+  world.heap.top+=sz;
+  if(world.heap.top>world.heap.brk){world.heap.brk=world.heap.top+0x4000;world.heap.grew=true;}
+  _fresh=ck.addr;
+  return ck;
+}
+// 复用同一块内存但换个变量名（地址不变，链表→程序手里时改 label）
+const relabel=(ck,l)=>ck?Object.assign({},ck,{label:l}):null;
+
+/* ═══════════════════════ 构建步骤（严格照实测轨迹） ═══════════════════════ */
+
+// 序幕
+step({sec:null,cl:-1,badge:'程序开始',
+  narr:'这一版用<b class="add">一段连贯的程序</b>跑完 malloc/free 的全部路径：A 新建第二个 arena → B tcache → C fastbin → F large 切分 → D unsorted 合并 → E small 复用 → G top → H mmap。左边是完整源码（含子线程 <code>worker</code> 函数体），跟着高亮行走；右边内存池常驻显示，每步只动该动的部分（黄框=本步变化）。所有地址、chunk 大小都是 glibc 2.36 容器实测值。',
+  key:'为什么这个顺序？<b>large 段（F）必须趁堆干净时先做</b>。若放在 D/E 之后，前面留下的 remainder 会抢先满足请求，best-fit 演示就废了——这是真实串跑的硬约束。'});
+
+/* ───── A. 第二个 arena（并发段，露出 worker）───── */
+step({sec:'A',cl:'a-create',focus:'arena',badge:'A · 启动子线程',badgeCls:'',arenaRing:1,active:'main',
+  narr:'<code>main</code> 调 <code>pthread_create(...worker...)</code> 启动一个子线程，让它去跑左上角的 <code>worker</code> 函数。此刻进程里<b class="add">两个线程并发</b>：主线程继续往下走，子线程开始执行 worker。现在还只有 main_arena（子线程还没 malloc）。',
+  key:'pthread_create 之后，主线程和子线程<b>同时在跑</b>——这就是你问的「会切换到子线程」的并发时刻，全在 A 段。'});
+world.thread2=true;
+const T2=CK(900000,80,'p@子线程');   // 子线程 malloc(64)→chunk80，在 arena1(高地址)
+world.t2held=[T2]; world.arenaCount=2;
+step({sec:'A',cl:'wk-malloc',focus:'arena',badge:'A · 子线程 malloc',badgeCls:'',arenaRing:2,active:'t2',
+  narr:'<b style="color:var(--heap)">切到子线程</b>：worker 里第一次 <code>malloc(64)</code>（chunk80）。glibc 不去碰 main_arena，而是<b class="add">给子线程新开一个 arena 1</b>（mmap 高地址 0x7fxxxx）——arena 总数 1→2。注意命名：主 arena 叫 <code>main_arena</code>（不编号），子线程触发的非主 arena 从 <b>arena 1</b> 起编号，所以它是「第二个 arena」但名字叫 arena 1。子线程在<b style="color:var(--heap)">自己的 arena、自己独立的 tcache</b> 里分配，和主线程互不加锁。',
+  key:'子线程首次 malloc 触发新 arena，不是抢不到锁的退路——是 glibc 主动给新线程开独立池子。两个 arena 靠 next 串成环。'});
+// 子线程 free(p)：chunk80 → 进它自己的 tcache 桶3，不碰主线程
+_fresh=T2.addr;
+world.t2held=[]; world.t2tcache=[T2];
+step({sec:'A',cl:'wk-free',focus:'arena',badge:'A · 子线程 free',badgeCls:'tc',active:'t2',arenaRing:2,
+  narr:'<b style="color:var(--heap)">子线程 <code>free(p)</code></b>：chunk80 对应 tcache 桶 (80−32)/16 = <b>3</b>。这块<b class="add">头插进子线程自己的 tcache</b>（下方子线程面板里出现了）。<b class="danger">关键看对照</b>：它进的是<b style="color:var(--heap)">子线程的 tcache</b>，主线程那套 tcache（右下「主线程私有」列）<b>纹丝不动</b>——两套 tcache 物理隔离、互不可见，所以全程<b class="tc">不用加锁</b>。',
+  key:'free 进哪套 tcache，看的是<b>哪个线程在执行 free</b>。子线程 free → 子线程 tcache。这就是 tcache 免锁的本钱：别的线程根本碰不到我的 tcache。'});
+step({sec:'A',cl:'wk-barr',focus:'arena',badge:'A · 两 arena 并存',badgeCls:'',arenaRing:2,active:'t2',
+  narr:'子线程走到 <code>barrier</code> 等主线程。此刻<b class="add">两个 arena 同时存在</b>：main_arena（brk 低地址）+ arena 1（mmap 高地址）；那块 free 掉的 chunk80 躺在<b style="color:var(--heap)">子线程的 tcache 桶3</b> 里。两套 tcache 各自独立——这正是开篇「主/子线程地址差近 128 GB」的根源。',
+  key:'如果子线程接着再 malloc(64)，会直接从自己 tcache 桶3 头摘、拿回这块——和主线程那套 tcache 完全平行，互不影响。'});
+// join：子线程结束，它的 arena/tcache 留下（可被后来线程复用）
+world.thread2=false; world.t2tcache=[]; world.t2held=[];
+step({sec:'A',cl:'a-join',focus:'arena',badge:'A · join 后单主线程',badgeCls:'',arenaRing:2,active:'main',
+  narr:'<code>pthread_join</code> 等子线程结束。子线程退出后，<b class="add">进程里只剩主线程</b>。它建过的 arena 1（连同里面 tcache free 的那块）仍留在那，<b>可被后来的线程复用</b>，但不再有人并发操作它。<b>下面 B~H 全在主线程的 main_arena 里跑</b>——这是<b class="add">故意</b>的：单线程堆状态确定、可复现，才好一步步演示每条 bin 路径。',
+  key:'B~H 单线程不是偷懒，是为了演示确定性。真实多线程下各 arena 的 bin 逻辑完全一样，只是多了抢 mutex 这一步（见上一页吞吐实测）。'});
+
+/* ───── B. tcache 放/取 ───── */
+let B0=carveTop(32,'p');
+held_add(B0);
+step({sec:'B',cl:'b-main',focus:'tcache',op:'malloc(16) → +0  chunk32',opKind:'take',badge:'B · malloc',badgeCls:'tc',
+  narr:'<code>p = malloc(16)</code>：请求 16+8 头部、对齐到 <b>chunk 32</b>，桶下标 (32−32)/16 = <b>0</b>。tcache 桶0 现在空，从堆新切一块给 p（地址 +0），程序持有。',
+  key:'分桶看 <b>chunk 大小</b>不是请求字节。malloc(16)→chunk32→桶0。'});
+held_take(B0.addr); tc_push(B0);
+step({sec:'B',cl:'b-main',focus:'tcache',op:'free(p) → 进 tcache 桶0',opKind:'put',badge:'B · free',badgeCls:'tc',
+  narr:'<code>free(p)</code>：chunk32 对应 tcache 桶0 没满（&lt;7）→ <b class="tc">头插</b>进去，全程<b class="tc">不加锁</b>。p 的数据区从「你的数据」变成 next 指针（现在是 NULL，链尾）。',
+  key:'free 最快路径：tcache 桶没满就头插，counts[0]++，不碰 arena、不抢锁。'});
+const B1=relabel(tc_pop(32),'q'); held_add(B1);
+step({sec:'B',cl:'b-main',focus:'tcache',op:'malloc(16) → 头摘 = +0',opKind:'take',badge:'B · 拿回同块',badgeCls:'tc',
+  narr:'<code>q = malloc(16)</code>：先查 tcache 桶0，非空 → <b class="add">头摘</b>第一块，正是刚 free 的 +0。<b>q == p，拿回同一块</b>——变量名从 p 改成 q，但<b class="add">是同一块内存</b>（地址不变）——这就是上一篇「free 完再 malloc 拿回同一块」的真相。',
+  key:'tcache 是 LIFO 栈：free 头插、malloc 头摘，所以拿回最近还的那块。'});
+held_take(B1.addr); tc_push(B1);   // 还回去，清干净（实测里 free(x2) 后又 malloc 掏空，这里简化为留在桶里）
+const Bd=tc_pop(32); held_add(Bd);
+step({sec:'B',cl:'b-main',focus:'tcache',op:'掏空桶0，进入下一段',opKind:'take',badge:'B · 收尾',badgeCls:'tc',
+  narr:'把这块拿走、桶0 清空，避免干扰后面 C 段的演示。tcache 这一档现在空了。',
+  key:'演示需要：每段结束把动过的桶收干净，下一段从已知状态起步——真实串跑里也是这么清的。'});
+held_take(Bd.addr);
+
+/* ───── C. fastbin 溢出 ───── */
+// 9 块 chunk32：从 top 依次切出（地址连续递增）
+const Cblk=Array.from({length:9},(_,i)=>carveTop(32,'b'+i));
+Cblk.forEach(held_add);
+step({sec:'C',cl:'c-malloc',focus:'tcache',op:'malloc(16) × 9 → +32 … +288',opKind:'take',badge:'C · 拿 9 块',badgeCls:'tc',
+  narr:'<code>for: b[i]=malloc(16)</code>，连拿 9 块同档（chunk32，地址 +32…+288），全在程序手里。桶空着——桶只装还回来的块。接下来逐块 free 看溢出。',
+  key:'tcache 每桶上限 <b>7 块</b>。先记住这个 7，下面正好会撞上。'});
+// free 0..6 进 tcache
+for(let i=0;i<7;i++){
+  Cblk[i]; held_take(Cblk[i].addr); tc_push(Cblk[i]);
+}
+step({sec:'C',cl:'c-free',focus:'tcache',op:'free(b0..b6) → tcache 桶0 装到 7',opKind:'put',badge:'C · 填满 7',badgeCls:'tc',
+  narr:'<code>free(b[0..6])</code>：前 7 块依次<b class="tc">头插</b>进 tcache 桶0，链越串越长（每块 next 指前一个入桶的块）。到第 7 块，<b class="tc">桶0 正好满 7</b>。',
+  key:'LIFO 头插：链表头永远是最近 free 的那块。'});
+// free 7,8 溢出 fastbin
+held_take(Cblk[7].addr); fb_push(Cblk[7]);
+step({sec:'C',cl:'c-free',focus:'fb',op:'free(b7) → tcache 满！溢出 fastbin',opKind:'put',badge:'C · 溢出①',badgeCls:'fb',
+  narr:'<code>free(b[7])</code>：tcache 桶0 已满 7，<b class="fb">装不下 → 溢出到 fastbin</b>。chunk32≤128 在 fastbin 范围，头插进 fastbinsY[0]。但 fastbin 在 malloc_state 里、多线程共享，这一步<b class="danger">要先抢 arena.mutex</b>，慢一档。',
+  key:'tcache 满了，同档块才往 fastbin 落。fastbin 也是 LIFO 单链表，但<b class="fb">要锁、且不合并相邻块</b>。'});
+held_take(Cblk[8].addr); fb_push(Cblk[8]);
+step({sec:'C',cl:'c-free',focus:'fb',op:'free(b8) → fastbin 第二块',opKind:'put',badge:'C · 溢出②',badgeCls:'fb',
+  narr:'<code>free(b[8])</code>：再溢出一块，fastbin 现在是 <code>b8 → b7 → NULL</code>。9 块全还回：<b class="tc">tcache 7 块</b>（b6…b0）+ <b class="fb">fastbin 2 块</b>（b8、b7）。',
+  key:'两条链各自后进在头。fastbin 容许一长串相邻空闲块并存（不合并），换来快。'});
+// 取回 9 次：先 tcache 7（b6..b0），再 fastbin 2（b8,b7）
+let gi=0; const Cback=[];
+for(let i=0;i<7;i++){const ck=tc_pop(32);if(ck){held_add(relabel(ck,'g'+(gi++)));Cback.push(ck.off);}}
+step({sec:'C',cl:'c-take',focus:'tcache',op:'malloc(16) × 7 → 头摘 tcache (b6→…→b0)',opKind:'take',badge:'C · 掏 tcache',badgeCls:'tc',
+  narr:'<code>for: g[i]=malloc(16)</code> 先掏 tcache（免锁）：连摘 7 次，顺序 <b>b6→b5→…→b0</b>（实测 +224→+192→…→+32）——正是入桶顺序<b>倒过来</b>，LIFO。tcache 桶0 掏空。',
+  key:'实测取回首块 = +224 = b6，确实是最后 free 的那块。'});
+const cf1=fb_pop(32);if(cf1)held_add(relabel(cf1,'g'+(gi++)));
+const cf2=fb_pop(32);if(cf2)held_add(relabel(cf2,'g'+(gi++)));
+step({sec:'C',cl:'c-take',focus:'fb',op:'malloc(16) × 2 → 转 fastbin (b8, b7)',opKind:'take',badge:'C · 掏 fastbin',badgeCls:'fb',
+  narr:'tcache 空了 → 第 8、9 次 malloc 转 <b class="fb">fastbin</b>（这次要抢锁），头摘 b8、b7（实测 +288、+256）→ 接到 <code>g[7]</code>、<code>g[8]</code>。两层缓存无缝拼接、各自 LIFO。9 块全回程序手里。',
+  key:'malloc 命中 fastbin 时，还会顺手把该档剩余块批量填回 tcache，下次又走免锁快车道。'});
+// 收干净：把 9 块全 free 再 malloc 掏空（简化：直接清 held + 让池子空）
+world.held=world.held.filter(c=>c.sz!==32);
+world.tcache={}; world.fastbin={};
+step({sec:'C',cl:'c-take',focus:'',op:'收尾：清空 chunk32 这一档',opKind:'',badge:'C · 收尾',badgeCls:'',
+  narr:'把 chunk32 这一档的 tcache、fastbin 都掏空收干净，进入 large 段。注意——<b class="add">下一段特意先做 large</b>，趁堆还干净，best-fit 才演示得出来。',
+  key:'到这里小块的两层免锁/低锁缓存（tcache+fastbin）讲完了。下面是 arena 里要遍历、要排序的大块世界。'});
+
+/* ───── F. large bin 归类 + best-fit 切分 ───── */
+const L1=carveTop(1520,'L1'), Lg1=carveTop(112,'守卫'), L2=carveTop(2512,'L2'), Lg2=carveTop(112,'守卫');
+[L1,Lg1,L2,Lg2].forEach(held_add);
+step({sec:'F',cl:'f-malloc',focus:'top',op:'malloc ×4 → 全部从 top 切，top 连推 4 次',opKind:'take',badge:'F · 造两块',badgeCls:'large',
+  freshList:[L1.addr,Lg1.addr,L2.addr,Lg2.addr],
+  narr:'<code>L1=malloc(1500)</code>（chunk <b>1520</b>）、<code>L2=malloc(2500)</code>（chunk <b>2512</b>），中间各夹一块 malloc(100) 守卫块（chunk112，挡住、防 L1/L2 之后被并进 top）。<b class="top">这 4 块的内存全部来自 top chunk</b>：此刻 tcache/fastbin/unsorted/small/large 全空，没有任何现成的空闲块可复用，malloc 只能走到查找链的最末端——从 <b class="top">堆顶 wilderness 切新块</b>。每切一块，<b class="top">top 指针就往高地址挪一格</b>（右侧堆内存条里 4 个新块依次叠高、top→ 行随之上移，本步共上移 4256 B ≈ 4.2 KB）。',
+  key:'<b>为什么 top 要上移？</b>因为别的桶里都没有合适的空闲块——malloc 的查找顺序 tcache→fastbin→unsorted→small→large 全部落空，最后兜底从 top 切，切走多少，top 指针就上移多少。这一步连切 4 块，所以 top 连推 4 次。'});
+held_take(L1.addr); uns_push(L1);
+held_take(L2.addr); uns_push(L2);
+step({sec:'F',cl:'f-free',focus:'uns',op:'free(L1); free(L2) → 都进 unsorted',opKind:'put',badge:'F · 进 unsorted',badgeCls:'uns',
+  narr:'<code>free(L1); free(L2)</code>：chunk&gt;128，不进 fastbin。两块物理上被守卫块隔开、<b>不相邻所以不合并</b>，各自<b class="uns">头插进 unsorted bin</b> 中转，等后续处理。',
+  key:'free 大块先进 unsorted，<b>不立即分类</b>——刚 free 的常马上被同 size 取走，省得白归类。'});
+const Fhuge=carveTop(5008,'huge');
+// malloc(5000) 遍历 unsorted，把 L1/L2 归类进 large bin（都不匹配 5008），自己从 top 拿
+world.unsorted=[]; world.large=[L2,L1];   // 降序：2512 在前
+held_add(Fhuge);
+step({sec:'F',cl:'f-sort',focus:'large',op:'malloc(5000) → 遍历 unsorted，归类 L1/L2',opKind:'take',badge:'F · 归类',badgeCls:'large',
+  narr:'<code>malloc(5000)</code>（chunk5008）：tcache/fastbin 没有 → <b class="uns">遍历 unsorted</b>。L1、L2 都不够 5008，于是被<b class="large">逐块归类进 large bin</b>（按大小降序：2512 在前、1520 在后，并接入 fd_nextsize 跳表）。malloc(5000) 自己从 top 新切。',
+  key:'<b>关键机关</b>：块不是 free 时直接进 large bin，而是 malloc 遍历 unsorted 时<b>顺路归类</b>。要触发它，unsorted 里得有匹配不上的块。'});
+// malloc(2000) best-fit：选 ≥2016 的最小簇 = L2(2512)，切成 2016 + remainder(496) 回 unsorted
+const Fqq=CK(L2.off,2016,'qq');   // 拿回 L2 起始地址（同一块内存，改名 qq）
+world.large=[L1];               // L2 被取走，large 剩 L1(1520)
+world.unsorted=[CK(L2.off+2016,480,'余料')];
+held_add(Fqq);
+step({sec:'F',cl:'f-split',focus:'large',op:'malloc(2000) → best-fit 命中 L2(2512)，切分',opKind:'take',badge:'F · best-fit 切',badgeCls:'large',
+  narr:'<code>qq=malloc(2000)</code>（chunk2016）：在 large bin 里 <b class="large">best-fit</b>——沿 fd_nextsize 跳表找 ≥2016 的<b>最小</b>那簇。1520 不够，选 <b>2512（L2）</b>。<b class="add">拿回 L2 的地址 +1952、chunk 切成 2016</b>，剩下的 ≈496 字节造个新 chunk 头当 remainder <b class="uns">丢回 unsorted</b>。实测 qq==L2 ✓。',
+  key:'best-fit + 切分：找最接近的大小，多出的尾巴够成块（≥32）就切两半，余料回 unsorted。large bin 剩 1520 那块。'});
+// 收尾：把 large 段产物清理掉，避免污染 D
+world.large=[]; world.unsorted=[]; world.held=world.held.filter(c=>[L1.addr,Lg1.addr,Lg2.addr,Fhuge.addr,Fqq.addr].indexOf(c.addr)<0 ? true : false);
+world.held=[];
+step({sec:'F',cl:'f-split',focus:'',op:'收尾：清空 large/unsorted',opKind:'',badge:'F · 收尾',badgeCls:'',
+  narr:'large 段做完（趁堆干净，best-fit 干净命中）。清掉残留，进入 D 段看相邻块的合并。',
+  key:'若 D/E 在前，它们的 remainder 会让 malloc(2000) 拿到别的块——这就是必须 large 优先的原因。'});
+
+/* ───── D. unsorted 合并（consolidate）───── */
+const Da=carveTop(2016,'a1'), Db=carveTop(2016,'a2'), Dg=carveTop(2016,'守卫');
+[Da,Db,Dg].forEach(held_add);
+step({sec:'D',cl:'d-malloc',focus:'',op:'malloc 三块 chunk2016（a1,a2,守卫）',opKind:'take',badge:'D · 三块相邻',badgeCls:'uns',
+  narr:'<code>a1=malloc(2000); a2=malloc(2000)</code>（各 chunk2016），再一块守卫挡住 top。实测 a2−a1 = <b>2016</b> = a1 的 chunk 大小——证明它俩在内存里<b>物理紧挨</b>。',
+  key:'「相邻」指<b>物理地址紧挨</b>，不是链表前后。靠 size / prev_size 算邻居地址。'});
+held_take(Da.addr); uns_push(Da);
+step({sec:'D',cl:'d-free',focus:'uns',op:'free(a1) → 进 unsorted',opKind:'put',badge:'D · free a1',badgeCls:'uns',
+  narr:'<code>free(a1)</code>：chunk2016&gt;128。看物理邻居——后邻 a2 还在用、不能并 → a1 单独<b class="uns">头插进 unsorted</b>。',
+  key:'free 大块先尝试和物理相邻的空闲块合并，没有可合并的就进 unsorted。'});
+held_take(Db.addr);
+world.unsorted=[CK(Da.off,4032,'a1+a2 合并块')];   // 合并
+step({sec:'D',cl:'d-free',focus:'uns',op:'free(a2) → 与 a1 物理相邻 → 合并 4032',opKind:'put',badge:'D · consolidate',badgeCls:'uns',
+  narr:'<code>free(a2)</code>：a2 的<b class="danger">物理前邻 a1 正空闲</b>（看 a2 的 prev_size 定位）→ <b class="add">consolidate</b>！把 a1 从 unsorted 摘下，两块 size 相加，合成<b>一块 chunk4032</b> 的大块，再头插回 unsorted。',
+  key:'单次 free 最多碰前邻+当前+后邻 3 块。靠「相邻空闲块不并存」不变量，连续 free 会接力滚成一大块。'});
+const Dbg=CK(Da.off,4032,'bg');
+world.unsorted=[]; held_add(Dbg);
+step({sec:'D',cl:'d-take',focus:'uns',op:'malloc(4000) → 拿回合并块 a1',opKind:'take',badge:'D · 验证合并',badgeCls:'add',
+  narr:'<code>bg=malloc(4000)</code>（chunk≈4016）：单块 2016 装不下，但合并后的 4032 够。<b class="add">拿回 a1 的地址、chunk=4032</b>，实测 bg==a1 ✓——坐实 a1、a2 真的合并成了一块。',
+  key:'合并看物理地址不看链表。这也是 fastbin「不合并所以快、但碎片化」的反面。'});
+world.held=[]; world.unsorted=[];
+
+/* ───── E. small bin 归类 + 复用 ───── */
+const Esm=[];
+for(let i=0;i<10;i++){const ck=carveTop(160,'sm'+i);Esm.push(ck);held_add(ck);}
+step({sec:'E',cl:'e-malloc',focus:'',op:'malloc(150) × 10 → chunk160',opKind:'take',badge:'E · 10 块 small',badgeCls:'small',
+  narr:'<code>for: sm[i]=malloc(150)</code>，10 块 chunk <b>160</b>（落 small 范围）。chunk160 &gt; fastbin 上限 128，所以 free 时不会进 fastbin。',
+  key:'small bin 活跃范围 chunk 144~1008，每档 16B，桶下标和 tcache 同算法。'});
+for(let i=0;i<7;i++){held_take(Esm[i].addr);tc_push(Esm[i]);}
+for(let i=7;i<10;i++){held_take(Esm[i].addr);uns_push(Esm[i]);}
+step({sec:'E',cl:'e-free',focus:'uns',op:'free × 10 → 7 进 tcache，3 进 unsorted',opKind:'put',badge:'E · free 10',badgeCls:'uns',
+  narr:'<code>for: free(sm[i])</code>：前 7 块填满 tcache chunk160 这档；第 8/9/10 块 tcache 满了、又 &gt;128 进不了 fastbin → 直接<b class="uns">进 unsorted</b>（3 块）。',
+  key:'chunk160 这档：tcache 桶满 7 后，溢出的不去 fastbin（超 128），而是 unsorted。'});
+// malloc(500) 遍历 unsorted，把 3 块 chunk160 归类进 small bin；它自己匹配不上 → 从 top 切
+const sm160=world.unsorted.slice();
+world.unsorted=[]; world.small[tcIdx(160)]=sm160.slice().reverse();  // FIFO 顺序
+const Etrig=carveTop(512,'trig');   // chunk512 从 wilderness 切出（右侧 top 指针上移）
+held_add(Etrig);
+step({sec:'E',cl:'e-sort',focus:'top',op:'malloc(500) → 遍历 unsorted 归类，自己从 top 切 chunk512',opKind:'take',badge:'E · 归类',badgeCls:'small',
+  narr:'<code>malloc(500)</code>（chunk512）：遍历 unsorted，那 3 块 chunk160 都不匹配 512 → 被<b class="small">归类进 small bin</b> 对应桶（FIFO 双向链）。<b class="top">malloc(500) 自己匹配不上任何 bin → 从 top 切一块 chunk512</b>（右侧堆内存条里 top 指针上移、新切出 trig 块），这就是它的来源。',
+  key:'和 large 同理：small 块是 malloc 遍历 unsorted 时<b>顺路归类</b>进 small bin；而 malloc(500) 本身没命中，落到查找链最末端——从 <b class="top">top</b> 兜底切。'});
+// 掏空 tcache chunk160 桶
+for(let i=0;i<7;i++){const ck=tc_pop(160);if(ck)held_add(relabel(ck,'r'+i));}
+step({sec:'E',cl:'e-drain',focus:'tcache',op:'malloc(150) × 7 → 掏空 tcache chunk160 桶',opKind:'take',badge:'E · 掏 tcache',badgeCls:'tc',
+  narr:'<code>for: malloc(150) ×7</code>：先把 tcache chunk160 这档的 7 块掏空（免锁优先）。现在这档 tcache 空了，small bin 里还躺着刚归类的 3 块。',
+  key:'malloc 永远先问 tcache。tcache 这档空了，才轮到 small bin。'});
+const Efs=small_popTail(160); if(Efs)held_add(relabel(Efs,'fs'));
+step({sec:'E',cl:'e-take',focus:'small',op:'malloc(150) → 从 small bin 摘尾',opKind:'take',badge:'E · 用 small',badgeCls:'small',
+  narr:'<code>fs=malloc(150)</code>：tcache 空 → 转 <b class="small">small bin</b>，<b class="small">FIFO 摘尾</b>（先 free 的先取走，和 tcache/fastbin 的 LIFO 相反）。实测拿到 chunk160，来自 small bin ✓。',
+  key:'small bin = 精确分档 FIFO 双向链：free 插头、malloc 摘尾，先来先用，时间局部性差点但碎片少。'});
+world.held=[]; world.small={}; world.unsorted=[]; world.tcache={}; world.fastbin={};
+
+/* ───── G. top chunk 切 ───── */
+const Gfr=carveTop(60016,'fr');
+held_add(Gfr);
+step({sec:'G',cl:'g-malloc',focus:'top',op:'malloc(60000) → 从 top 切，chunk60016，hblks=0',opKind:'take',badge:'G · top 切',badgeCls:'top',
+  narr:'<code>fr=malloc(60000)</code>（chunk60016）：tcache/fastbin/unsorted/small/large <b>全落空</b> → 兜底从 <b class="top">top chunk</b>（堆顶荒地）的低地址端切一块。右侧堆内存条里 <b class="top">top 指针一下子上移一大截</b>，切剩的缩小后仍是 top。这块太大、超出原 wilderness → <b class="add">brk 把 program break 往高地址推（堆扩张）</b>，brk 线随之上移。实测 <b>hblks=0</b>，说明走的是 brk 堆、不是 mmap。',
+  key:'top = wilderness，malloc_state.top 指着它。top 不够时 brk 把 program break 往高地址推、把 top 撑大——看右侧 brk 线上移。'});
+
+/* ───── H. mmap 直通 ───── */
+const Hhu=CK(999999,200704,'hu');  // 高地址，单独 mmap 区域
+world.mmap=[Hhu]; world.held=world.held.filter(c=>c.addr!==Gfr.addr); held_add(Hhu);
+step({sec:'H',cl:'h-malloc',focus:'mmap',op:'malloc(200000) → mmap，hblks 0→1，地址跳高位',opKind:'take',badge:'H · mmap',badgeCls:'mmap',
+  narr:'<code>hu=malloc(200000)</code>：请求 ≥ <b>128KB</b>（M_MMAP_THRESHOLD）→ <b style="color:var(--mmap)">直接 mmap</b>，<b class="danger">绕过所有 arena 和 bin</b>，问内核单独要一块（高地址 0x7fff…）。实测 hblks 0→1。free 时 munmap 整块还内核，不进任何 bin。',
+  key:'mmap 直通是大块的专用通道，和整个 bin 体系无关。free 即 munmap，RSS 立刻下降。'});
+
+/* ───── 收束 ───── */
+step({sec:null,cl:-1,focus:'',badge:'全景跑完',badgeCls:'add',
+  narr:'一段程序跑完了 malloc/free 的全部路径：<b>A</b> 子线程触发第二个 arena；<b class="tc">B</b> tcache 放取拿回同块；<b class="fb">C</b> 满 7 溢出 fastbin；<b class="large">F</b> 归类进 large bin 再 best-fit 切分；<b class="uns">D</b> 相邻块 free 时 consolidate 合并；<b class="small">E</b> 归类进 small bin 再 FIFO 复用；<b class="top">G</b> 从 top 兜底切；<b style="color:var(--mmap)">H</b> 超阈值直接 mmap。每一步的地址和 chunk 大小都是 glibc 2.36 实测。',
+  key:'一次 malloc 的查找顺序：tcache → fastbin → unsorted → small → large → top → mmap，命中越早越快；多线程的代价从第二层 fastbin 抢 mutex 起就开始计价。'});
+
+/* ═══════════════════════ 渲染 ═══════════════════════ */
+let cur=0,timer=null,autoOn=false;
+const stage=$('stage'),codeBd=$('code-bd');
+
+/* ── 飞行动画层：让 chunk 跨步移动「看得见」 ── */
+const flightLayer=(()=>{const d=document.createElement('div');d.id='flight';document.body.appendChild(d);return d;})();
+let flightTimers=[];
+const reduceMotion=()=>window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function clearFlight(){
+  flightLayer.innerHTML='';
+  flightTimers.forEach(t=>clearTimeout(t));flightTimers=[];
+  stage.querySelectorAll('[data-key]').forEach(el=>{el.style.visibility='';el.classList.remove('spawn-in');});
+}
+// 渲染前：记下每个 chunk 元素的屏幕坐标 + 一份克隆（用于淡出消失的块）
+function captureRects(){
+  const m=new Map();
+  stage.querySelectorAll('[data-key]').forEach(el=>{
+    m.set(el.dataset.key,{rect:el.getBoundingClientRect(),node:el.cloneNode(true)});
+  });
+  return m;
+}
+function pulse(elm){if(!elm)return;elm.classList.add('landing');flightTimers.push(setTimeout(()=>elm.classList.remove('landing'),760));}
+// 渲染后：对比新旧坐标，编排「移动 / 长出 / 消失」三类动画
+function runFlip(oldRects,s){
+  const FLY=300;
+  const newEls=[...stage.querySelectorAll('[data-key]')];
+  const newKeys=new Set(newEls.map(e=>e.dataset.key));
+  newEls.forEach(el=>{
+    const k=el.dataset.key,old=oldRects.get(k),nr=el.getBoundingClientRect();
+    if(nr.width===0&&nr.height===0)return;
+    if(old){
+      const o=old.rect, dx=o.left-nr.left, dy=o.top-nr.top;
+      const moved=Math.abs(dx)>2||Math.abs(dy)>2||Math.abs(o.width-nr.width)>2||Math.abs(o.height-nr.height)>2;
+      if(moved){
+        const fresh=s.fresh===k;
+        const clone=el.cloneNode(true);
+        clone.classList.add('flying');if(fresh)clone.classList.add('fresh');
+        clone.removeAttribute('data-key');
+        Object.assign(clone.style,{left:o.left+'px',top:o.top+'px',width:o.width+'px',height:o.height+'px',transform:'translate(0,0) scale(1)'});
+        flightLayer.appendChild(clone);
+        el.style.visibility='hidden';
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{
+          const sx=nr.width/o.width||1, sy=nr.height/o.height||1;
+          clone.style.transition=`transform ${FLY}ms cubic-bezier(.5,0,.2,1)`;
+          clone.style.transform=`translate(${nr.left-o.left}px,${nr.top-o.top}px) scale(${sx},${sy})`;
+        }));
+        flightTimers.push(setTimeout(()=>{el.style.visibility='';clone.remove();},FLY+50));
+      }
+    }else{
+      el.classList.add('spawn-in');
+      flightTimers.push(setTimeout(()=>el.classList.remove('spawn-in'),580));
+    }
+  });
+  // 消失的块（合并 / 收尾）：用旧克隆淡出缩小
+  oldRects.forEach((old,k)=>{
+    if(newKeys.has(k)||old.rect.width===0)return;
+    const ghost=old.node;ghost.classList.add('flying','despawn');ghost.removeAttribute('data-key');
+    Object.assign(ghost.style,{left:old.rect.left+'px',top:old.rect.top+'px',width:old.rect.width+'px',height:old.rect.height+'px',visibility:'',transform:'scale(1)',opacity:'1'});
+    flightLayer.appendChild(ghost);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      ghost.style.transition=`opacity ${FLY}ms ease, transform ${FLY}ms ease`;
+      ghost.style.opacity='0';ghost.style.transform='scale(.55)';
+    }));
+    flightTimers.push(setTimeout(()=>ghost.remove(),FLY+50));
+  });
+  // 落点容器脉冲：本步变化的块所在的桶 / 面板
+  if(s.fresh){
+    const fe=newEls.find(e=>e.dataset.key===s.fresh);
+    if(fe)pulse(fe.closest('.prow')||fe.closest('.zone'));
+  }
+}
+
+// 章节进度条
+function renderPhasebar(){
+  const s=STEPS[cur];
+  $('phasebar').innerHTML=SECS.map(p=>{
+    const on=s.sec===p.k;
+    return `<div class="ph${on?' on':''}" data-sec="${p.k}"><span class="pn">${p.k}</span>${p.t}</div>`;
+  }).join('');
+  $('phasebar').querySelectorAll('.ph').forEach(el=>el.onclick=()=>{
+    const sec=el.dataset.sec, idx=STEPS.findIndex(x=>x.sec===sec);
+    if(idx>=0){stopAuto();go(idx);}
+  });
+}
+
+// 把 step.cl（可能是数字索引，或字符串 id，或 id 数组）解析成要高亮的 SRC 下标集合
+function clIndexes(cl){
+  if(cl==null||cl===-1) return [];
+  const ids=Array.isArray(cl)?cl:[cl];
+  const out=[];
+  ids.forEach(c=>{
+    if(typeof c==='number'){ out.push(c); return; }
+    const i=SRC.findIndex(l=>l.id===c);
+    if(i>=0) out.push(i);
+  });
+  return out;
+}
+
+// 代码面板：高亮当前行，当前章节内的行正常、其余略暗
+function renderCode(s){
+  const act=clIndexes(s.cl);
+  let html='<pre class="code">';
+  SRC.forEach((ln,i)=>{
+    const active=act.includes(i);
+    let dim = s.sec && !active;
+    html+=`<span class="cline${active?' active':''}${dim&&!inSec(i,s.sec)?' dimmed':''}">${ln.t||'&nbsp;'}</span>`;
+  });
+  html+='</pre>';
+  codeBd.innerHTML=html;
+  const a=codeBd.querySelector('.cline.active');
+  if(a)a.scrollIntoView({block:'center',behavior:'smooth'});
+}
+// 行 i 是否属于章节 sec（在 sec 标签行与下一个 sec 标签行之间）
+function inSec(i,sec){
+  let cur=null;
+  for(let k=0;k<SRC.length;k++){ if(SRC[k].sec)cur=SRC[k].sec; if(k===i)return cur===sec; }
+  return false;
+}
+
+// 一个池子行（chips 表示其中的 chunk）
+function poolRow(kind,name,lock,chunks,s,opts){
+  opts=opts||{};
+  const act=s.focus===kind?' act':'';
+  // 锁图标带文字，避免「🔓 到底要不要锁」的歧义
+  const lockTxt = lock==='🔓' ? '🔓 免锁' : (lock==='🔒' ? '🔒 要锁' : lock);
+  const lk=lock?`<span class="lock" style="font-size:9px;color:${lock==='🔓'?'var(--tc)':'var(--faint)'}">${lockTxt}</span>`:'';
+  let chips;
+  if(!chunks||!chunks.length){
+    chips=`<span class="chip empty">空</span>`;
+  }else{
+    chips=chunks.map(c=>{
+      const fr=isFresh(s,c.addr)?' fresh':'';
+      const lbl=opts.showLabel&&c.label?c.label+' ':'';
+      return `<span class="chip${fr}" data-key="${c.addr}" data-kind="${kind}">${lbl}${c.addr} · ${c.sz}</span>`;
+    }).join('');
+  }
+  const cnt=opts.count!=null?`<span class="pcount">${opts.count}</span>`:(chunks?`<span class="pcount">${chunks.length} 块</span>`:'');
+  return `<div class="prow ${kind}${act}"><div class="prh">${name}${cnt}${lk?lk:''}</div><div class="chips">${chips}</div></div>`;
+}
+
+// tcache 桶汇总：把所有非空桶 + 当前 focus 桶画出来
+function tcacheRows(s){
+  const w=s.w, buckets=Object.keys(w.tcache).map(Number).sort((a,b)=>a-b);
+  let rows='';
+  if(!buckets.length){
+    rows=poolRow('tc','tcache（线程私有·免锁·≤7）','🔓',[],s);
+  }else{
+    buckets.forEach(b=>{
+      const sz=32+b*16;
+      rows+=poolRow('tc',`tcache 桶${b} (chunk${sz}, ${w.tcache[b].length}/7)`,'🔓',w.tcache[b],s,{showLabel:true});
+    });
+  }
+  return rows;
+}
+
+// fastbin 行
+function fastbinRows(s){
+  const w=s.w, slots=Object.keys(w.fastbin).map(Number).sort((a,b)=>a-b);
+  if(!slots.length) return poolRow('fb','fastbinsY · chunk≤128 · LIFO · 不合并','🔒',[],s);
+  return slots.map(b=>poolRow('fb',`fastbinsY[${b}] (chunk${32+b*16})`,'🔒',w.fastbin[b],s,{showLabel:true})).join('');
+}
+// small 行
+function smallRows(s){
+  const w=s.w, slots=Object.keys(w.small).map(Number).sort((a,b)=>a-b);
+  if(!slots.length) return poolRow('small','bins[2..63] small · 每档16B · FIFO摘尾','🔒',[],s);
+  return slots.map(b=>poolRow('small',`small bin (chunk${32+b*16})`,'🔒',w.small[b],s,{showLabel:true})).join('');
+}
+
+// 右列：物理 brk 堆（top 指针在这里真实移动）+ mmap 直通区
+function heapBar(s){
+  const w=s.w, h=w.heap;
+  const wild=Math.max(0,h.brk-h.top);
+  const wkb=(wild/1024).toFixed(1);
+  const carved=h.carved;                         // 滚动窗口，低→高
+  // 高地址在上：倒序渲染 carved
+  const rows=carved.slice().reverse().map(c=>{
+    const fr=isFresh(s,c.addr)?' fresh':'';
+    return `<div class="hchunk${fr}" data-key="heap-${c.addr}"><span class="hcl">${c.label}</span><span class="hca">${c.addr}</span><span class="hcs">chunk${c.sz}</span></div>`;
+  }).join('');
+  const earlier = (carved.length && carved[0].off>0)
+    ? `<div class="hmore">⋯ 更早分配的块（更低地址，${hx(0)} 起）⋯</div>` : '';
+  const cutBadge = s.topDelta>0?`<span class="tarrow">▲ 本步 top 上移 ${fmtB(s.topDelta)}</span>`:'';
+  const grewBadge = h.grew?`<span class="topbadge2">brk 上推 · 堆扩张 ↑</span>`:'';
+  const spotTop = s.focus==='top'?' spot':'';
+  const spotMm  = s.focus==='mmap'?' spot':'';
+  const heapInner = carved.length
+    ? `${rows}${earlier}`
+    : `<div class="hempty">（还没从堆切过块）</div>`;
+  // mmap 区
+  const mmChips = w.mmap.length
+    ? w.mmap.map(c=>`<div class="mmchip${isFresh(s,c.addr)?' fresh':''}" data-key="mm-${c.addr}"><span class="hcl">${c.label}</span><span class="hca">${c.addr}</span><span class="hcs">chunk${c.sz}</span></div>`).join('')
+    : `<div class="hempty">空（还没 mmap 过）</div>`;
+  return `<div class="heapcol"><p class="colhead">物理内存：brk 堆 + mmap<span class="lk">top∈malloc_state 🔒</span></p>
+    <div class="heapbar${spotTop}">
+      <div class="brkline"><span>brk →</span><span>${hx(h.brk)}　(program break)</span></div>
+      <div class="wild"><div class="wlabel">↑ 高地址　·　wilderness 荒地<br>剩余 ≈ ${wkb} KB</div></div>
+      <div class="topline"><span>top →</span><span class="taddr">${hx(h.top)}</span>${cutBadge}${grewBadge}</div>
+      ${heapInner}
+      <div class="baseline">堆起始 ${hx(0)}　·　↓ 低地址</div>
+    </div>
+    <div class="mmapbox${spotMm}">
+      <div class="mmh"><span>mmap 直通区（高地址）</span><span>🔓 不走 arena 锁</span></div>
+      <div class="mmb">${mmChips}<div class="mmnote">≥128KB 直接 syscall 问内核要；不进任何 bin，free 即 munmap 整块还内核</div></div>
+    </div>
+  </div>`;
+}
+
+function render(animate){
+  const s=STEPS[cur];
+  renderCode(s);
+  renderPhasebar();
+  $('keynote').innerHTML=s.key?('💡 '+s.key):'<span style="color:var(--faint)">跟着左边高亮的代码行走，右边内存池常驻，黄框是本步变化。</span>';
+  const dir=s.opKind==='take'?'<span class="dir take">⟵ 取出</span>':(s.opKind==='put'?'<span class="dir put">放入 ⟶</span>':'');
+  $('fieldref').innerHTML=s.op?`<div class="opline ${s.opKind==='take'?'take':''}">${dir}本步操作：<b>${s.op}</b></div>`:'';
+
+  const w=s.w;
+  // 顶部 arena 环（标注哪个 arena 属于哪个线程、谁在跑）
+  let ring='';
+  if(s.arenaRing){
+    let nodes='';
+    for(let i=0;i<s.arenaRing;i++){
+      const main=i===0;
+      // 子线程活着时，arena i(>0) 归子线程；active 线程对应的 arena 高亮
+      const ownedByT2 = !main;
+      const isActive = (s.active==='t2' && ownedByT2) || (s.active==='main' && main && s.focus==='arena');
+      const runlab = w.thread2 ? (main?'主线程':'子线程') : (main?(i===0?'主线程':''):'（子线程已退出）');
+      nodes+=`<div class="anode ${main?'main':'thread'}${isActive?' active':''}" data-key="arena-${i}" data-kind="arena">
+        <div class="an-t">${main?'main_arena':'arena '+i}${runlab?` <span style="font-weight:400;font-size:9px;color:${main?'var(--accent)':'var(--heap)'}">${runlab}</span>`:''}</div>
+        <div class="an-s">${main?'brk · 0x40xxxx':'mmap · 0x7fxxxx'}</div></div>`;
+      if(i<s.arenaRing-1) nodes+=`<div class="nxt"><svg viewBox="0 0 38 18"><path class="ln" d="M2 9 H30"/><path class="hd" d="M30 4 L38 9 L30 14 Z"/></svg></div>`;
+    }
+    if(s.arenaRing>1) nodes+=`<div class="loop">⟲ next 绕回 main_arena</div>`;
+    const runtag = w.thread2?'两线程并发中':'仅主线程';
+    ring=`<div class="zone ${s.focus==='arena'?'spot':''}"><div class="zh" style="color:var(--accent)">▤ arena 环形链表<span class="tag">arena 数 = ${w.arenaCount} · ${runtag} · 上限 8×nproc</span></div>
+      <div class="zb"><div class="ring">${nodes}</div></div></div>`;
+  }
+
+  // 子线程并发面板（仅 thread2 活着时显示）
+  let t2='';
+  if(w.thread2){
+    const tcChips = w.t2tcache.length
+      ? w.t2tcache.map(c=>`<span class="chip${s.fresh===c.addr?' fresh':''}" data-key="${c.addr}" data-kind="t2tc">桶${tcIdx(c.sz)} · ${c.label} ${c.addr} · ${c.sz}</span>`).join('')
+      : '<span class="chip empty">空（还没 free 过）</span>';
+    const heldChips = w.t2held.length
+      ? w.t2held.map(c=>`<span class="chip${s.fresh===c.addr?' fresh':''}" data-key="${c.addr}" data-kind="t2held">${c.label} ${c.addr} · ${c.sz} · 使用中</span>`).join('')
+      : '<span class="chip empty">空</span>';
+    t2=`<div class="zone" style="box-shadow:0 0 0 1px var(--heap)"><div class="zh" style="color:var(--heap)">▤ 子线程（在 arena 1，和主线程并发）<span class="tag">🔓 线程私有 · 无需加锁</span></div>
+      <div class="zb"><div class="pool-list">
+        <div class="prow"><div class="prh" style="color:var(--heap)">子线程持有的块（使用中，未 free）</div><div class="chips">${heldChips}</div></div>
+        <div class="prow"><div class="prh" style="color:var(--heap)">子线程私有 tcache（结构体已建，空）<span class="lock" style="font-size:9px;color:var(--tc)">🔓 免锁</span></div><div class="chips">${tcChips}</div></div>
+      </div></div></div>`;
+  }
+
+  // held（主线程持有）
+  let held='';
+  if(w.held.length){
+    const cells=w.held.map(c=>`<div class="hb${isFresh(s,c.addr)?' changed':''}" data-key="${c.addr}" data-kind="held"><div class="hbtop">${c.label||'chunk'}·${c.sz}</div><div class="hbmid">${c.addr}</div></div>`).join('');
+    held=`<div class="zone"><div class="zh" style="color:var(--accent)">▤ ${w.thread2?'主线程':'程序'}手里的块（已分配，不在任何桶）<span class="tag">${w.held.length} 块</span></div><div class="zb"><div class="held">${cells}</div></div></div>`;
+  }
+
+  // 左列：线程私有 tcache
+  const mainlab = w.thread2?'主线程私有（不在 arena 里）':'线程私有（不在 arena 里）';
+  const leftCol=`<div><p class="colhead">${mainlab}<span class="lk">🔓 免锁</span></p>
+    <div class="pool-list">${tcacheRows(s)}</div></div>`;
+  // 中列：arena 的 malloc_state 各 bin（全部要持 arena mutex）
+  const midCol=`<div><p class="colhead">main_arena 的 malloc_state<span class="lk">🔒 操作要持 mutex</span></p>
+    <div class="pool-list">
+      ${fastbinRows(s)}
+      ${poolRow('uns','bins[1] unsorted · 新 free 块中转 · 双向链','🔒',w.unsorted,s,{showLabel:true})}
+      ${smallRows(s)}
+      ${poolRow('large','bins[64..126] large · 对数分档 · best-fit','🔒',w.large,s,{showLabel:true})}
+    </div></div>`;
+  // 右列：物理内存（brk 堆 + top 指针 + mmap 直通区）
+  const heapColHtml=heapBar(s);
+
+  const doAnim = animate && !reduceMotion();
+  clearFlight();
+  const oldRects = doAnim ? captureRects() : null;
+  stage.innerHTML=ring+t2+held+`<div class="grid3">${leftCol}${midCol}${heapColHtml}</div>`;
+  if(oldRects) runFlip(oldRects,s);
+
+  const b=$('badge');
+  b.textContent=s.badge||('步骤 '+(cur+1));
+  b.className='badge '+(s.badgeCls||'');
+  $('narr-text').innerHTML=s.narr;
+  $('counter').textContent=(cur+1)+' / '+STEPS.length;
+  $('prev').disabled=cur===0;$('next').disabled=cur===STEPS.length-1;
+}
+
+function go(n,animate){cur=Math.max(0,Math.min(STEPS.length-1,n));render(animate);}
+$('next').onclick=()=>go(cur+1,true);
+$('prev').onclick=()=>go(cur-1,true);
+$('reset').onclick=()=>{stopAuto();go(0,false);};
+function stopAuto(){autoOn=false;clearTimeout(timer);$('auto').textContent='▶ 自动';$('auto').classList.remove('primary');}
+$('auto').onclick=()=>{
+  if(autoOn){stopAuto();return;}
+  autoOn=true;$('auto').textContent='⏸ 暂停';$('auto').classList.add('primary');
+  (function loop(){if(!autoOn)return;if(cur>=STEPS.length-1){stopAuto();return;}go(cur+1,true);timer=setTimeout(loop,+$('speed').value);})();
+};
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'){go(cur+1,true);e.preventDefault();}
+  if(e.key==='ArrowLeft'){go(cur-1,true);e.preventDefault();}
+  if(e.key===' '){$('auto').click();e.preventDefault();}
+});
+render(false);
+</script>
+</body>
+</html>

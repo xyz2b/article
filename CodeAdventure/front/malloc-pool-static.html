@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>arena 内部完整结构 · malloc_state / bins 全景（可点击）· glibc 2.36</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --add:#3fb950; --change:#bb8009;
+    --tc:#3fb9b0; --fb:#f0883e; --uns:#d2a8ff; --small:#79c0ff;
+    --large:#56d364; --top:#e3b341; --next:#a371f7; --danger:#f778ba; --heap:#3fb9b0;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5}
+  .wrap{max-width:1720px;margin:0 auto;padding:14px 22px 60px}
+  h1.t{font-size:18px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+  .sub b{color:var(--accent)} .sub b.add{color:var(--add)}
+  .hintbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 14px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--dim)}
+  .hintbar .k{font-family:var(--mono);background:var(--panel2);border:1px solid var(--border);
+    border-radius:5px;padding:1px 7px;color:var(--accent)}
+  .hintbar button{margin-left:auto;font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:5px 11px;cursor:pointer}
+  .hintbar button:hover{border-color:var(--accent);color:#fff}
+
+  .layout{display:grid;grid-template-columns:340px 1fr;gap:14px;align-items:start}
+  @media(max-width:1100px){.layout{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:8px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;
+    color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .leftcol{position:sticky;top:12px}
+
+  /* malloc_state 字段表（可点击跳转） */
+  .ms .msrow{display:flex;align-items:stretch;border-bottom:1px solid rgba(40,48,57,.7);transition:.15s;position:relative}
+  .ms .msrow:last-child{border-bottom:none}
+  .ms .msrow.clk{cursor:pointer}
+  .ms .msrow.clk:hover{background:rgba(88,166,255,.1)}
+  .ms .msrow.clk:hover .mf{color:#fff}
+  .ms .msrow .mf{flex:0 0 132px;padding:6px 10px;font-family:var(--mono);font-size:11px;font-weight:600;
+    display:flex;align-items:center;gap:5px;border-right:1px solid rgba(40,48,57,.7)}
+  .ms .msrow .mo{flex:0 0 34px;padding:6px 3px;font-family:var(--mono);font-size:8.5px;color:var(--faint);
+    text-align:right;border-right:1px solid rgba(40,48,57,.7);display:flex;align-items:center;justify-content:flex-end}
+  .ms .msrow .md{flex:1;padding:6px 10px;font-size:10px;color:var(--dim);display:flex;align-items:center;gap:6px}
+  .ms .msrow .md .jump{margin-left:auto;font-size:9px;color:var(--accent);white-space:nowrap;opacity:.7}
+  .ms .msrow.f-mutex .mf{color:var(--danger)} .ms .msrow.f-fast .mf{color:var(--fb)}
+  .ms .msrow.f-top .mf{color:var(--top)} .ms .msrow.f-next .mf{color:var(--next)}
+  .ms .msrow.f-uns .mf{color:var(--uns)} .ms .msrow.f-small .mf{color:var(--small)} .ms .msrow.f-large .mf{color:var(--large)}
+  .ms .mshd{padding:7px 11px;border-bottom:1px solid rgba(88,166,255,.3);font-family:var(--mono);font-size:11px;
+    color:var(--accent);font-weight:700;display:flex;align-items:center;gap:6px;background:rgba(88,166,255,.05)}
+  .ms .mshd .tag{margin-left:auto;font-size:8.5px;font-weight:400;color:var(--faint)}
+  .legend2{padding:10px 12px;font-size:10.5px;color:var(--dim);line-height:1.7}
+  .legend2 .dot{width:10px;height:10px;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:-1px}
+  .legend2 .row{display:flex;flex-wrap:wrap;gap:10px}
+
+  /* 右栏：各 bin 区块 */
+  .region{background:var(--panel);border:1px solid var(--border);border-radius:12px;margin-bottom:14px;overflow:hidden;scroll-margin-top:14px;transition:box-shadow .3s}
+  .region.flash{box-shadow:0 0 0 2px var(--accent)}
+  .region .rh{padding:9px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px}
+  .region .rh .rtitle{font-family:var(--mono);font-size:13px;font-weight:700}
+  .region .rh .rmeta{font-size:11px;color:var(--dim)}
+  .region .rh .rlock{margin-left:auto;font-size:10px;color:var(--faint);font-family:var(--mono)}
+  .region .rb{padding:12px 14px}
+  .region.tc .rh{background:rgba(63,185,176,.06)} .region.tc .rtitle{color:var(--tc)} .region.tc{border-color:rgba(63,185,176,.4)}
+  .region.fb .rh{background:rgba(240,136,62,.06)} .region.fb .rtitle{color:var(--fb)}
+  .region.uns .rh{background:rgba(210,168,255,.06)} .region.uns .rtitle{color:var(--uns)}
+  .region.small .rh{background:rgba(121,192,255,.06)} .region.small .rtitle{color:var(--small)}
+  .region.large .rh{background:rgba(86,211,100,.06)} .region.large .rtitle{color:var(--large)}
+  .region.top .rh{background:rgba(227,179,65,.06)} .region.top .rtitle{color:var(--top)}
+  .rnote{font-size:11px;color:var(--dim);line-height:1.55;margin:0 0 11px}
+  .rnote code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:11px}
+
+  /* top：真实内存竖图 */
+  .memfig{display:flex;gap:0;align-items:stretch;font-family:var(--mono)}
+  .memaxis{flex:0 0 70px;display:flex;flex-direction:column;justify-content:space-between;
+    font-size:9px;color:var(--faint);text-align:right;padding:2px 8px 2px 0}
+  .memaxis .hi{color:var(--top)} .memaxis .lo{color:var(--accent)}
+  /* 内存条本体：高地址在上、低地址在下。右侧留出指针轨道，不裁剪 */
+  .barwrap{flex:1;position:relative;padding-right:150px;min-width:0}
+  .membar{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:8px}
+  .memseg{position:relative;display:flex;align-items:center;justify-content:center;
+    font-size:10px;text-align:center;padding:6px 9px 6px 64px;border-bottom:1px solid rgba(40,48,57,.7);min-height:30px}
+  .memseg:first-child{border-radius:7px 7px 0 0} .memseg:last-child{border-bottom:none;border-radius:0 0 7px 7px}
+  .memseg .ma{position:absolute;left:7px;top:50%;transform:translateY(-50%);font-size:8px;color:var(--heap)}
+  .memseg.used{background:rgba(88,166,255,.10);color:var(--accent)}
+  .memseg.used.busy{background:rgba(88,166,255,.16)}
+  /* wilderness 大块：撑高、斜纹、可点击 */
+  .memseg.wild{flex:1;min-height:150px;flex-direction:column;gap:5px;cursor:pointer;
+    background:repeating-linear-gradient(135deg,rgba(227,179,65,.13) 0 9px,rgba(227,179,65,.03) 9px 18px);
+    color:var(--top);font-weight:700;transition:.18s}
+  .memseg.wild:hover{background:repeating-linear-gradient(135deg,rgba(227,179,65,.22) 0 9px,rgba(227,179,65,.06) 9px 18px)}
+  .memseg.wild .wsz{font-size:13px} .memseg.wild .wsub{font-size:9px;color:var(--dim);font-weight:400;padding:0 6px}
+  .memseg.wild .whint{font-size:8.5px;color:var(--top);font-weight:400;opacity:.8}
+  /* program break 顶线 / 堆基线 */
+  .memseg.brkbar{background:rgba(227,179,65,.06);color:var(--top);font-size:9px;font-weight:700;
+    min-height:24px;border-bottom:2px solid var(--top)}
+  .memseg.basebar{background:rgba(63,185,176,.05);color:var(--heap);font-size:9px;min-height:24px;border-top:1px dashed var(--border)}
+  /* 边界指针：锚定在某条分界线上，伸到右侧 */
+  .bptr{position:absolute;left:100%;display:flex;align-items:center;white-space:nowrap;z-index:4}
+  .bptr .hd{font-size:14px;line-height:1;margin-left:-3px}
+  .bptr .ln{width:26px;height:2px}
+  .bptr .pbox{border-radius:7px;font-size:10px;font-weight:700;padding:4px 9px;text-align:left;line-height:1.35}
+  .bptr .pbox .pa{font-size:8.5px;color:var(--dim);font-weight:400}
+  /* top 指针：锚定 wilderness 底边（= top chunk 起始边界）*/
+  .bptr.topp{bottom:0;transform:translateY(50%)}
+  .bptr.topp .hd,.bptr.topp .ln{color:var(--top)} .bptr.topp .ln{background:var(--top)}
+  .bptr.topp .pbox{border:1px solid var(--top);background:rgba(227,179,65,.14);color:var(--top)}
+  /* program break 指针：锚定 brkbar 底边（= brk 分界线）*/
+  .bptr.brkp{bottom:0;transform:translateY(50%)}
+  .bptr.brkp .hd,.bptr.brkp .ln{color:var(--add)} .bptr.brkp .ln{background:var(--add)}
+  .bptr.brkp .pbox{border:1px solid var(--add);background:rgba(63,185,80,.12);color:var(--add)}
+  .memseg.topstart{background:rgba(227,179,65,.18);color:var(--top);font-weight:700}
+  .memnote{margin-top:11px;font-family:var(--mono);font-size:9.5px;color:var(--faint);line-height:1.6;
+    display:flex;gap:18px;flex-wrap:wrap}
+  .memnote .ni{display:flex;align-items:center;gap:6px}
+  .memnote .sw{width:16px;height:11px;border-radius:3px;display:inline-block;border:1px solid var(--border)}
+  .memnote .sw.u{background:rgba(88,166,255,.16)}
+  .memnote .sw.w{background:repeating-linear-gradient(135deg,rgba(227,179,65,.4) 0 4px,rgba(227,179,65,.08) 4px 8px)}
+
+  /* 桶行：左边桶标签，右边一条链 */
+  .brow{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid rgba(40,48,57,.5)}
+  .brow:last-child{border-bottom:none}
+  .brow .blabel{flex:0 0 138px;font-family:var(--mono);font-size:10.5px;padding-top:6px}
+  .brow .blabel .bi{color:var(--faint);font-size:9px}
+  .brow .blabel .bc{font-size:9px;color:var(--faint);margin-top:1px}
+  .brow .blabel.full{color:#fff}
+  .chain{flex:1;display:flex;align-items:center;gap:0;flex-wrap:wrap;min-height:34px}
+  .head{font-family:var(--mono);font-size:9px;color:var(--faint);border:1px dashed var(--border);
+    border-radius:6px;padding:5px 7px;white-space:nowrap}
+  .arw{display:flex;align-items:center;color:var(--next);font-family:var(--mono);font-size:8px;padding:0 4px}
+  .arw svg{width:30px;height:14px;overflow:visible}
+  .arw .ln{stroke:var(--next);stroke-width:1.5;fill:none} .arw .hd{fill:var(--next)}
+  .nullend{font-family:var(--mono);font-size:9px;color:var(--faint);border:1px dashed var(--border);border-radius:6px;padding:5px 7px}
+
+  /* chunk 方块（可点击） */
+  .ck{flex:0 0 auto;border:1px solid var(--border);border-radius:7px;overflow:hidden;background:rgba(10,14,20,.5);
+    cursor:pointer;transition:.18s;min-width:76px}
+  .ck:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.4)}
+  .ck .ckt{display:flex;justify-content:space-between;gap:6px;padding:2px 7px;border-bottom:1px dashed var(--border);
+    font-family:var(--mono);font-size:8px;color:var(--faint)}
+  .ck .ckt .lab{color:var(--add);font-weight:700}
+  .ck .ckb{padding:5px 7px;font-family:var(--mono);font-size:10px;text-align:center}
+  .ck .ckb .a{color:var(--heap);font-size:9px} .ck .ckb .s{font-weight:700;margin-top:1px}
+  .ck.tc{border-color:rgba(63,185,176,.5)} .ck.tc .s{color:var(--tc)}
+  .ck.fb{border-color:rgba(240,136,62,.5)} .ck.fb .s{color:var(--fb)}
+  .ck.uns{border-color:rgba(210,168,255,.5)} .ck.uns .s{color:var(--uns)}
+  .ck.small{border-color:rgba(121,192,255,.5)} .ck.small .s{color:var(--small)}
+  .ck.large{border-color:rgba(86,211,100,.5)} .ck.large .s{color:var(--large)}
+  .ck.top{border-color:rgba(227,179,65,.6);background:repeating-linear-gradient(135deg,rgba(227,179,65,.10) 0 7px,rgba(227,179,65,.03) 7px 14px);min-width:150px}
+  .ck.top .s{color:var(--top)}
+  .ck.sel{box-shadow:0 0 0 2px var(--accent)}
+  .clusterbrace{font-family:var(--mono);font-size:8px;color:var(--faint);align-self:center;padding:0 3px}
+  .emptybin{font-family:var(--mono);font-size:10px;color:var(--faint);font-style:italic;padding-top:7px}
+  .nextsize-note{font-family:var(--mono);font-size:9px;color:var(--large);margin-top:8px;padding:6px 9px;
+    border:1px dashed rgba(86,211,100,.4);border-radius:7px;line-height:1.5}
+
+  /* large 桶分档表 */
+  .largedoc{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:10px}
+  .largedoc .ld{font-family:var(--mono);font-size:9.5px;border:1px solid var(--border);border-radius:6px;padding:5px 8px;color:var(--dim)}
+  .largedoc .ld b{color:var(--large)}
+
+  /* 弹窗 */
+  .modal-bg{position:fixed;inset:0;background:rgba(4,7,11,.72);z-index:2000;display:none;align-items:center;justify-content:center;padding:20px}
+  .modal-bg.on{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--accent);border-radius:14px;max-width:680px;width:100%;
+    max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+  .modal .mh{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;position:sticky;top:0;background:var(--panel)}
+  .modal .mh .mt{font-family:var(--mono);font-size:14px;font-weight:700;color:#fff}
+  .modal .mh .mtag{font-size:10px;padding:2px 8px;border-radius:5px;font-family:var(--mono)}
+  .modal .mh .x{margin-left:auto;cursor:pointer;font-size:20px;color:var(--dim);line-height:1;border:none;background:none}
+  .modal .mh .x:hover{color:#fff}
+  .modal .mb{padding:16px}
+  .modal .anat{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+  .chunkbox{flex:0 0 auto;width:250px;border:1px solid var(--border);border-radius:9px;overflow:hidden;font-family:var(--mono);font-size:11px}
+  .chunkbox.used{border-color:var(--accent)} .chunkbox.freed{border-color:var(--next);border-style:dashed}
+  .chunkbox .cseg{padding:8px 11px;border-bottom:1px solid var(--border);position:relative}
+  .chunkbox .cseg:last-child{border-bottom:none}
+  .chunkbox .cseg .csk{color:var(--accent);font-weight:700} .chunkbox .cseg .csd{color:var(--faint);font-size:9px;margin-top:2px}
+  .chunkbox .cseg.prev{background:rgba(110,118,129,.08)}
+  .chunkbox .cseg.size{background:rgba(88,166,255,.08)}
+  .chunkbox .cseg.data{background:rgba(63,185,176,.06);min-height:64px}
+  .chunkbox.freed .cseg.data{background:rgba(163,113,247,.1)}
+  .chunkbox .cseg .uptr{position:absolute;right:-4px;top:50%;transform:translateX(100%) translateY(-50%);font-size:9px;color:var(--add);white-space:nowrap}
+  .modal .flagbox{flex:1;min-width:240px;font-family:var(--mono);font-size:11px;color:var(--dim);line-height:1.7}
+  .modal .flagbox .bits{font-size:14px;color:var(--text);letter-spacing:1px;margin:5px 0}
+  .modal .flagbox .fl{color:var(--fb)} .modal .flagbox b{color:var(--accent)}
+  .modal .frow{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid rgba(40,48,57,.5);font-size:11.5px}
+  .modal .frow:last-child{border-bottom:none}
+  .modal .frow .fk{flex:0 0 120px;font-family:var(--mono);color:var(--accent)}
+  .modal .frow .fv{flex:1;color:var(--text)}
+  .modal .mnote{margin-top:14px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);font-size:11.5px;color:var(--dim);line-height:1.6}
+  .modal .mnote b{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">arena 内部完整结构 · 一个 malloc_state 管的全部空闲块</h1>
+  <p class="sub">这是一个<b class="add">预填充</b>的 arena 全景：左边是 <b>malloc_state</b> 的完整字段表，右边是它管的<b>每一类 bin 的完整内部细节</b>（fastbin 10 槽 · unsorted · small 62 桶 · large 对数分档 + nextsize 跳表 · top）。glibc 2.36 实测结构。</p>
+  <div class="hintbar">
+    <span>👆 点左边字段 <span class="k">mutex / fastbinsY / bins / top</span> → 跳到对应区域</span>
+    <span>👆 点任意一块 <span class="k">chunk</span> → 弹出它的完整内存布局</span>
+    <button id="expand-large">展开/收起 large 分档说明</button>
+  </div>
+  <div class="layout">
+    <div class="panel leftcol">
+      <div class="ttl">struct malloc_state（arena 账本 · sizeof 2200）</div>
+      <div class="ms" id="mstable"></div>
+      <div class="legend2">
+        <div class="row">
+          <span><i class="dot" style="background:var(--tc)"></i>tcache（线程私有·免锁）</span>
+          <span><i class="dot" style="background:var(--fb)"></i>fastbin</span>
+          <span><i class="dot" style="background:var(--uns)"></i>unsorted</span>
+          <span><i class="dot" style="background:var(--small)"></i>small</span>
+          <span><i class="dot" style="background:var(--large)"></i>large</span>
+          <span><i class="dot" style="background:var(--top)"></i>top</span>
+        </div>
+        <div style="margin-top:7px;color:var(--faint)">一把 <b style="color:var(--danger)">mutex</b> 锁住整张账本：fastbin + bins + top 的所有操作都要先持有它，这就是多线程 malloc 的瓶颈。</div>
+      </div>
+    </div>
+    <div id="regions"></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-bg">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const hx=n=>'0x'+n.toString(16);
+
+/* ═══════ chunk 工厂 ═══════
+   每块: {id, addr(num), sz, label, kind} —— kind 决定它的状态/数据区含义 */
+const BASE=0x405290;
+let _uid=0;
+function CK(addrOff,sz,kind,label){
+  return {id:'c'+(_uid++), addr:BASE+addrOff, sz, kind, label:label||''};
+}
+// chunk 桶下标（tcache/small 同算法）
+const idxOf=sz=>(sz-32)/16;
+
+/* ═══════ 预填充的 arena 状态（每类 bin 都塞几块，照实测大小） ═══════ */
+const POOL={
+  // tcache: 桶下标 -> [chunk]（链头在 [0]，LIFO）
+  tcache:{
+    0:[CK(0x40,32,'tc'),CK(0x80,32,'tc'),CK(0x20,32,'tc')],          // chunk32 桶, 3 块
+    3:[CK(0x300,80,'tc'),CK(0x350,80,'tc')],                          // chunk80 桶, 2 块
+    7:[CK(0x600,144,'tc')],                                           // chunk144 桶, 1 块
+  },
+  // fastbin: 槽下标(=idx) -> [chunk]（LIFO，不合并）
+  fastbin:{
+    0:[CK(0x900,32,'fb'),CK(0x940,32,'fb')],                          // chunk32
+    1:[CK(0xa00,48,'fb')],                                            // chunk48
+    3:[CK(0xb00,80,'fb'),CK(0xb60,80,'fb'),CK(0xbc0,80,'fb')],        // chunk80, 3 块
+  },
+  // unsorted: 双向链，混大小
+  unsorted:[CK(0x1200,1232,'uns','大块free'),CK(0x1700,560,'uns','切剩余'),CK(0x1a00,4112,'uns','合并块')],
+  // small: 桶下标 -> [chunk]（FIFO，插头摘尾），每桶单一大小
+  small:{
+    4:[CK(0x2000,96,'small'),CK(0x2100,96,'small')],                  // chunk96
+    8:[CK(0x2400,160,'small'),CK(0x2480,160,'small'),CK(0x2500,160,'small')], // chunk160
+    20:[CK(0x2800,352,'small')],                                      // chunk352
+  },
+  // large: 单桶内按大小降序，同 size 聚簇；标 isRep=该簇代表（上跳表）
+  // 这里展示 bins[64] 档（chunk 1024~2016）里的一桶
+  large:[
+    {sz:2016,reps:[CK(0x3000,2016,'large','L-a'),CK(0x3800,2016,'large','L-b')]},  // 2016 簇 2 块
+    {sz:1552,reps:[CK(0x4100,1552,'large','L-c')]},                                // 1552 簇 1 块
+    {sz:1040,reps:[CK(0x4800,1040,'large','L-d'),CK(0x4d00,1040,'large','L-e'),CK(0x5200,1040,'large','L-f')]}, // 1040 簇 3 块
+  ],
+  // top
+  top:CK(0x5800,84080,'top','wilderness'),
+  brk:BASE+0x5800+84080+0x3000,
+};
+//SCRIPT2
+
+/* ── 建一个 id->chunk 索引（弹窗用）── */
+const CHUNKS={};
+function indexChunk(c,extra){ CHUNKS[c.id]=Object.assign({},c,extra||{}); }
+Object.values(POOL.tcache).flat().forEach(c=>indexChunk(c,{state:'freed',container:'tcache 桶'+idxOf(c.sz),link:'tc'}));
+Object.values(POOL.fastbin).flat().forEach(c=>indexChunk(c,{state:'freed',container:'fastbin 槽'+idxOf(c.sz),link:'fb',fastbin:true}));
+POOL.unsorted.forEach(c=>indexChunk(c,{state:'freed',container:'unsorted bin (bins[1])',link:'uns',dbl:true}));
+Object.values(POOL.small).flat().forEach(c=>indexChunk(c,{state:'freed',container:'small bin',link:'small',dbl:true}));
+POOL.large.forEach(cl=>cl.reps.forEach(c=>indexChunk(c,{state:'freed',container:'large bin (bins[64])',link:'large',dbl:true,nextsize:true})));
+indexChunk(POOL.top,{state:'top',container:'top chunk (wilderness)',link:'top'});
+
+/* ═══════ malloc_state 字段表（完整字段 + 可点击跳转） ═══════ */
+const MS=[
+  {f:'mutex',          off:'0',   b:'4B',  d:'那把锁（0=未持有）', cls:'f-mutex'},
+  {f:'flags',          off:'4',   b:'4B',  d:'arena 标志位'},
+  {f:'have_fastchunks',off:'8',   b:'4B',  d:'fastbin 是否有块'},
+  {f:'fastbinsY[10]',  off:'16',  b:'80B', d:'10 个 fastbin 槽（chunk≤128）', cls:'f-fast', link:'fb'},
+  {f:'top',            off:'96',  b:'8B',  d:'top chunk 指针（堆顶荒地）', cls:'f-top', link:'top'},
+  {f:'last_remainder', off:'104', b:'8B',  d:'上次切分剩下的余料'},
+  {f:'bins[1]',        off:'112', b:'16B', d:'unsorted bin（中转站）', cls:'f-uns', link:'uns', sub:true},
+  {f:'bins[2..63]',    off:'128', b:'992B',d:'small bins（62 桶 · 精确分档）', cls:'f-small', link:'small', sub:true},
+  {f:'bins[64..126]',  off:'1120',b:'1008B',d:'large bins（63 桶 · 对数分档）', cls:'f-large', link:'large', sub:true},
+  {f:'binmap[4]',      off:'2144',b:'16B', d:'非空 bin 位图（加速跳过空桶）'},
+  {f:'next',           off:'2160',b:'8B',  d:'指向下一个 arena（环形链表）', cls:'f-next'},
+  {f:'next_free',      off:'2168',b:'8B',  d:'空闲 arena 链'},
+  {f:'system_mem',     off:'2176',b:'8B',  d:'本 arena 已向系统要的总字节'},
+];
+function renderMsTable(){
+  const rows=MS.map(r=>{
+    const clk=r.link?' clk':'';
+    const jump=r.link?`<span class="jump">跳转 →</span>`:'';
+    return `<div class="msrow ${r.cls||''}${clk}" ${r.link?`data-link="${r.link}"`:''}>
+      <div class="mf">${r.sub?'&nbsp;&nbsp;':''}${r.f}</div><div class="mo">+${r.off}</div>
+      <div class="md">${r.d}${jump}</div></div>`;
+  }).join('');
+  $('mstable').innerHTML=`<div class="ms">${rows}</div>`;
+  $('mstable').querySelectorAll('.msrow.clk').forEach(el=>{
+    el.onclick=()=>jumpTo(el.dataset.link);
+  });
+}
+//SCRIPT3
+
+/* ── 单个 chunk 方块 ── */
+function chunkEl(c){
+  return `<div class="ck ${c.kind}" data-cid="${c.id}">
+    <div class="ckt">${c.label?`<span class="lab">${c.label}</span>`:'<span></span>'}<span>${c.sz}B</span></div>
+    <div class="ckb"><div class="a">${hx(c.addr)}</div><div class="s">chunk${c.sz}</div></div></div>`;
+}
+const ARROW=`<span class="arw"><svg viewBox="0 0 30 14"><path class="ln" d="M2 7 H22"/><path class="hd" d="M22 3 L30 7 L22 11 Z"/></svg></span>`;
+const ARROW2=`<span class="arw">⇄</span>`;
+
+// 单向链（tcache/fastbin）：head → c → c → NULL
+function singleChain(list,headLabel){
+  if(!list||!list.length) return `<span class="emptybin">空</span>`;
+  let h=`<span class="head">${headLabel}</span>`;
+  list.forEach(c=>{ h+=ARROW+chunkEl(c); });
+  h+=ARROW+`<span class="nullend">NULL</span>`;
+  return h;
+}
+// 双向链（unsorted/small）：head ⇄ c ⇄ c ⇄ head
+function doubleChain(list){
+  if(!list||!list.length) return `<span class="emptybin">空</span>`;
+  let h=`<span class="head">head</span>`;
+  list.forEach(c=>{ h+=ARROW2+chunkEl(c); });
+  h+=ARROW2+`<span class="nullend">head</span>`;
+  return h;
+}
+
+/* ═══════ 区域渲染 ═══════ */
+function regionTcache(){
+  const buckets=Object.keys(POOL.tcache).map(Number).sort((a,b)=>a-b);
+  const rows=buckets.map(b=>{
+    const list=POOL.tcache[b], sz=32+b*16;
+    return `<div class="brow"><div class="blabel${list.length>=7?' full':''}">桶${b}
+      <span class="bi">chunk${sz}</span><div class="bc">${list.length}/7</div></div>
+      <div class="chain">${singleChain(list,'entries['+b+']')}</div></div>`;
+  }).join('');
+  return `<div class="region tc" id="r-tc"><div class="rh">
+      <span class="rtitle">tcache</span><span class="rmeta">线程私有 · 不在 malloc_state 里</span>
+      <span class="rlock">🔓 免锁</span></div>
+    <div class="rb">
+      <p class="rnote">64 个桶（chunk 32~1040），每桶单向链表、上限 <b>7</b> 块、<b>LIFO</b>（free 头插、malloc 头摘）。挂在 <code>tcache_perthread_struct</code> 上、随线程走。这里只画了有块的桶。</p>
+      ${rows}</div></div>`;
+}
+
+function regionFastbin(){
+  const rows=[];
+  for(let i=0;i<7;i++){
+    const sz=32+i*16, list=POOL.fastbin[i]||[];
+    rows.push(`<div class="brow"><div class="blabel">fastbinsY[${i}]<span class="bi">chunk${sz}</span></div>
+      <div class="chain">${singleChain(list,'fb['+i+']')}</div></div>`);
+  }
+  rows.push(`<div class="brow"><div class="blabel" style="color:var(--faint)">[7..9]<span class="bi">预留</span></div>
+    <div class="chain"><span class="emptybin">默认不用（global_max_fast=128，只到槽6）</span></div></div>`);
+  return `<div class="region fb" id="r-fb"><div class="rh">
+      <span class="rtitle">fastbinsY[10]</span><span class="rmeta">malloc_state +16</span>
+      <span class="rlock">🔒 要锁</span></div>
+    <div class="rb">
+      <p class="rnote">只收 <b>chunk ≤ 128</b>（槽 0~6，对应 chunk 32/48/64/80/96/112/128）。单向链 <b>LIFO</b>，<b>不合并相邻块</b>——快，但允许一长串相邻空闲块并存，碎片化由此而来。</p>
+      ${rows.join('')}</div></div>`;
+}
+
+function regionUnsorted(){
+  return `<div class="region uns" id="r-uns"><div class="rh">
+      <span class="rtitle">unsorted bin</span><span class="rmeta">bins[1] · malloc_state +112</span>
+      <span class="rlock">🔒 要锁</span></div>
+    <div class="rb">
+      <p class="rnote">唯一<b>不分类</b>的链表，双向循环。新 free 的大块（chunk&gt;128）先扔这中转，大小混在一起。malloc 遍历它时：精确匹配就拿走，否则<b>顺手归类</b>进 small/large bin。</p>
+      <div class="brow"><div class="blabel">bins[1]<span class="bi">FIFO 双向链</span></div>
+        <div class="chain">${doubleChain(POOL.unsorted)}</div></div></div></div>`;
+}
+
+function regionSmall(){
+  const buckets=Object.keys(POOL.small).map(Number).sort((a,b)=>a-b);
+  const rows=buckets.map(b=>{
+    const list=POOL.small[b], sz=32+b*16;
+    return `<div class="brow"><div class="blabel">bins[${b}]<span class="bi">chunk${sz}</span><div class="bc">${list.length} 块</div></div>
+      <div class="chain">${doubleChain(list)}</div></div>`;
+  }).join('');
+  return `<div class="region small" id="r-small"><div class="rh">
+      <span class="rtitle">small bins</span><span class="rmeta">bins[2..63] · 62 桶</span>
+      <span class="rlock">🔒 要锁</span></div>
+    <div class="rb">
+      <p class="rnote">精确分档：每桶<b>单一大小</b>，16B 一档（chunk 48~1008）。双向链 <b>FIFO</b>——free 插头、malloc <b>摘尾</b>，先来先用，碎片少。这里只画有块的桶。</p>
+      ${rows}</div></div>`;
+}
+//SCRIPT4
+
+function regionLarge(){
+  // 主链：簇内降序，同 size 紧挨；代表块（每簇第一块）参与 nextsize 跳表
+  let mainChain=`<span class="head">head</span>`;
+  POOL.large.forEach((cl,ci)=>{
+    cl.reps.forEach((c,i)=>{
+      mainChain+=ARROW2+chunkEl(c);
+    });
+    if(ci<POOL.large.length-1) mainChain+=`<span class="clusterbrace">↕簇界</span>`;
+  });
+  mainChain+=ARROW2+`<span class="nullend">head</span>`;
+  // nextsize 跳表：只串每簇代表
+  let skip=`<span class="head" style="color:var(--large)">fd_nextsize</span>`;
+  POOL.large.forEach((cl,ci)=>{
+    const rep=cl.reps[0];
+    skip+=ARROW+`<span class="ck large" data-cid="${rep.id}" style="min-width:64px"><div class="ckb"><div class="s">${cl.sz}</div></div></span>`;
+  });
+  skip+=ARROW+`<span class="nullend">NULL</span>`;
+  const docTable=`<div class="largedoc" id="largedoc" style="display:none">
+    <div class="ld"><b>bins[64~95]</b> 32B 一档 · chunk 1024~2016</div>
+    <div class="ld"><b>bins[96~111]</b> 64B 一档</div>
+    <div class="ld"><b>bins[112~119]</b> 128B 一档</div>
+    <div class="ld"><b>bins[120~123]</b> 256B 一档</div>
+    <div class="ld"><b>bins[124~125]</b> 512B 一档</div>
+    <div class="ld"><b>bins[126]</b> 剩余全部（最大档）</div>
+  </div>`;
+  return `<div class="region large" id="r-large"><div class="rh">
+      <span class="rtitle">large bins</span><span class="rmeta">bins[64..126] · 63 桶 · 对数分档</span>
+      <span class="rlock">🔒 要锁</span></div>
+    <div class="rb">
+      <p class="rnote">每桶装<b>一段大小范围</b>（不像 small 单一大小），桶内主链按大小<b>降序</b>、同 size 聚成一簇。malloc 用 <b>best-fit</b>：沿 nextsize 跳表找「≥请求的最小那簇」，比请求大就<b>切分</b>、余料回 unsorted。下面是 <code>bins[64]</code> 档（chunk 1024~2016）的一个桶：</p>
+      <div class="brow"><div class="blabel">主链 fd/bk<span class="bi">桶内全部块·降序</span></div>
+        <div class="chain">${mainChain}</div></div>
+      <div class="brow"><div class="blabel" style="color:var(--large)">nextsize 跳表<span class="bi">只串每簇代表</span></div>
+        <div class="chain">${skip}</div></div>
+      <div class="nextsize-note">💡 主链上 <b>2016 簇</b>有 2 块、<b>1040 簇</b>有 3 块，但跳表只串每簇<b>第一块</b>（代表）：2016 → 1552 → 1040 → NULL。找大小时一跳跨过整簇，O(不同大小数) 定位，不必在主链上一块块挪。</div>
+      ${docTable}</div></div>`;
+}
+
+function regionTop(){
+  const c=POOL.top;
+  const wildKB=(c.sz/1024).toFixed(1);
+  // 用几块"已分配/已在 bin 里"的块垫在 top 下面，体现 top 在堆顶（地址都相对 BASE）
+  const below=[
+    {off:0x5600,lab:'…已分配 / 在各 bin 的块…',ghost:true},
+    {off:0x5400,lab:'chunk（已分配）'},
+    {off:0x5300,lab:'chunk（已分配）'},
+  ];
+  const belowRows=below.map(b=>`<div class="memseg used busy">
+    <span class="ma">${b.ghost?'':hx(BASE+b.off)}</span>${b.lab}</div>`).join('');
+  return `<div class="region top" id="r-top"><div class="rh">
+      <span class="rtitle">top chunk</span><span class="rmeta">malloc_state +96 · wilderness 荒地</span>
+      <span class="rlock">🔒 要锁</span></div>
+    <div class="rb">
+      <p class="rnote">所有 bin 都没合适块时的<b>兜底</b>：从堆顶这块未分割的大空间<b>低地址端</b>切给你，<code>top</code> 指针随之上移。它不够大时，<code>brk</code> 把 program break 往高地址推、把 top 撑大；请求 ≥128KB 则改走 mmap，完全绕过它。</p>
+      <div class="memfig">
+        <div class="memaxis"><span class="hi">↑ 高地址</span><span style="flex:1"></span><span class="lo">↓ 低地址</span></div>
+        <div class="barwrap">
+          <div class="membar">
+            <div class="memseg brkbar" style="position:relative">
+              <span class="ma">${hx(POOL.brk)}</span>program break（堆当前上沿，brk 推动）
+              <div class="bptr brkp"><span class="hd">◀</span><span class="ln"></span>
+                <div class="pbox">program break<div class="pa">brk 系统调用推动</div></div></div>
+            </div>
+            <div class="memseg wild" data-cid="${c.id}" style="position:relative">
+              <span class="wsz">wilderness 荒地 ≈ ${wildKB} KB</span>
+              <span class="wsub">未分割的大片空间 · malloc 从这块的低地址端往上切走</span>
+              <span class="whint">👆 点击查看 chunk${c.sz} 详细布局</span>
+              <div class="bptr topp"><span class="hd">◀</span><span class="ln"></span>
+                <div class="pbox">malloc_state.top<div class="pa">指向 top chunk 起始</div></div></div>
+            </div>
+            <div class="memseg topstart">
+              <span class="ma">${hx(c.addr)}</span>top chunk 起始边界（chunk${c.sz} 头部）
+            </div>
+            ${belowRows}
+            <div class="memseg basebar"><span class="ma">${hx(BASE)}</span>堆起始（tcache_perthread_struct 在最低处）</div>
+          </div>
+        </div>
+      </div>
+      <div class="memnote">
+        <span class="ni"><i class="sw u"></i>已分配 / 在 bin 的块</span>
+        <span class="ni"><i class="sw w"></i>wilderness（尚未切出的荒地，就是 top chunk）</span>
+        <span class="ni">▲ malloc 切走 → top 指针上移；荒地不够 → brk 上推</span>
+      </div>
+    </div></div>`;
+}
+
+function renderRegions(){
+  $('regions').innerHTML=regionTcache()+regionFastbin()+regionUnsorted()+regionSmall()+regionLarge()+regionTop();
+  // chunk 点击 → 弹窗（含 top 的 wilderness 块）
+  document.querySelectorAll('[data-cid]').forEach(el=>{
+    el.onclick=()=>openModal(el.dataset.cid);
+  });
+}
+//SCRIPT5
+
+/* ═══════ 跳转：点字段 → 滚到区域并闪一下 ═══════ */
+function jumpTo(link){
+  const el=$('r-'+link);
+  if(!el) return;
+  el.scrollIntoView({behavior:'smooth',block:'start'});
+  el.classList.add('flash');
+  setTimeout(()=>el.classList.remove('flash'),1100);
+}
+
+/* ═══════ chunk 弹窗：完整内存布局 ═══════ */
+function sizeHex(sz){
+  // size 字段 = chunk 大小 | PREV_INUSE(通常邻居在用)
+  return '0x'+(sz|1).toString(16);
+}
+function openModal(cid){
+  const c=CHUNKS[cid];
+  if(!c) return;
+  const freed=c.state==='freed', isTop=c.state==='top';
+  const tagColor=freed?'var(--next)':(isTop?'var(--top)':'var(--accent)');
+  const tagText=freed?'空闲态':(isTop?'top chunk':'在用态');
+  // 数据区内容随状态
+  let dataK,dataD;
+  if(isTop){ dataK='未分割的大片空间'; dataD='等 malloc 来切；这块就是 wilderness'; }
+  else if(c.dbl){ dataK='fd / bk（双向）'; dataD='空闲后头16字节借作前后向指针'+(c.nextsize?' + fd_nextsize/bk_nextsize 跳表指针':''); }
+  else if(freed){ dataK='fd = next 指针'; dataD='空闲后头8字节借作单链 next（safe-linking 加扰）'; }
+  else { dataK='你的用户数据'; dataD='正在用：malloc 返回的指针指向这里'; }
+
+  const fieldRows=[
+    ['容器（在哪类 bin）',c.container],
+    ['chunk 大小',c.sz+' 字节'],
+    ['桶下标',c.dbl||!freed?('(chunk−32)/16 = '+idxOf(c.sz)):('(chunk−32)/16 = '+idxOf(c.sz))],
+    ['size 字段值',sizeHex(c.sz)+'（'+c.sz+' | PREV_INUSE）'],
+    ['链表方向',c.dbl?'双向（fd/bk）':(isTop?'—':'单向（next）'+(c.fastbin?'，不合并':''))],
+    ['取出顺序',c.dbl?(c.nextsize?'best-fit（沿 nextsize 找最小够用簇）':'FIFO 摘尾'):(isTop?'从低地址端切':'LIFO 头摘')],
+  ];
+  let noteHtml='';
+  if(c.fastbin) noteHtml='fastbin 块 free 时<b>故意不清 PREV_INUSE</b>，让邻居以为它还在用 → 不被合并，省开销、换速度。';
+  else if(c.nextsize) noteHtml='只有<b>每簇第一块</b>（代表）参与 fd_nextsize/bk_nextsize 跳表；同簇其余块只在主链 fd/bk 上。';
+  else if(c.dbl) noteHtml='双向链可 O(1) 从中间 unlink——合并相邻块、或 malloc 摘尾时都要用到。';
+  else if(c.state==='freed') noteHtml='单向链没有 bk，只能从头摘；这也是 tcache/fastbin 快的原因之一。';
+  else if(isTop) noteHtml='top 不挂在任何 bin 链上，<code>malloc_state.top</code> 直接指着它。';
+
+  $('modal').innerHTML=`
+    <div class="mh"><span class="mt">chunk @ ${hx(c.addr)}</span>
+      <span class="mtag" style="color:${tagColor};border:1px solid ${tagColor}">${tagText}</span>
+      <button class="x" id="modal-x">×</button></div>
+    <div class="mb">
+      <div class="anat">
+        <div class="chunkbox ${freed?'freed':(isTop?'used':'used')}">
+          <div class="cseg prev"><span class="csk">prev_size</span> 8B<div class="csd">前块在用时被前块借走当数据</div></div>
+          <div class="cseg size"><span class="csk">size = ${sizeHex(c.sz)}</span>
+            <div class="csd">${c.sz} | A·M·P（清低3位 = ${c.sz}）</div><span class="uptr">← chunk 起始</span></div>
+          <div class="cseg data"><span class="csk" style="color:${freed?'var(--next)':'var(--tc)'}">${dataK}</span>
+            <div class="csd">${dataD}</div><span class="uptr">← malloc 返回的指针</span></div>
+        </div>
+        <div class="flagbox">
+          <div style="color:var(--accent);font-weight:700;margin-bottom:6px">size 低 3 位标志</div>
+          <div class="bits">${c.sz} | <span class="fl">P</span></div>
+          bit0 <b>P</b>(PREV_INUSE)：前一块是否在用<br>
+          bit1 <b>M</b>(IS_MMAPPED)：是否 mmap 来的<br>
+          bit2 <b>A</b>(NON_MAIN_ARENA)：是否非主 arena<br>
+          <span style="color:var(--faint)">chunk 大小永远是 8 的倍数 → 低 3 位空出来放标志。</span>
+        </div>
+      </div>
+      <div style="margin-top:16px">
+        ${fieldRows.map(r=>`<div class="frow"><div class="fk">${r[0]}</div><div class="fv">${r[1]}</div></div>`).join('')}
+      </div>
+      ${noteHtml?`<div class="mnote">💡 ${noteHtml}</div>`:''}
+    </div>`;
+  $('modal-x').onclick=closeModal;
+  $('modal-bg').classList.add('on');
+}
+function closeModal(){ $('modal-bg').classList.remove('on'); }
+$('modal-bg').onclick=e=>{ if(e.target===$('modal-bg')) closeModal(); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
+
+/* ═══════ 初始化 ═══════ */
+renderMsTable();
+renderRegions();
+$('expand-large').onclick=()=>{
+  const d=$('largedoc'); if(d) d.style.display=d.style.display==='none'?'grid':'none';
+};
+
+
+
+
+
+</script>
+</body>
+</html>
+
