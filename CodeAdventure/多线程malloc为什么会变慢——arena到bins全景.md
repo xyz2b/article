@@ -5,7 +5,7 @@
 > **🎯 交互式可视化**：[点击这里体验 arena → bins 全景动画](https://xyz2b.github.io/article/CodeAdventure/front/arena-bins-visualizer.html)
 > 你可以切换线程数，实时看 arena 怎么在多线程间分配和复用、五类 bin 怎么接力处理空闲块。
 >
-> **🧭 静态结构全景**：[点击这里查看 arena 内部完整结构（可点击）](https://xyz2b.github.io/article/CodeAdventure/front/malloc-pool-static.html)
+> **🧭 静态结构全景**：[点击这里查看 arena 内部完整结构](https://xyz2b.github.io/article/CodeAdventure/front/malloc-pool-static.html)
 > 一个预填充的 arena 全景：点 malloc_state 字段跳到对应区域，点任意 chunk 弹出它的完整内存布局，看清 fastbin / unsorted / small / large / top 每一类 bin 的内部细节。
 
 ---
