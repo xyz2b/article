@@ -1009,17 +1009,3 @@ arena 扩张上限（8×nproc）就是为了平衡这两种压力：arena 越多
 ---
 
 > 这是"一条代码的冒险之旅"系列的第四篇。上一篇讲 `free` 完再 `malloc` 为什么拿回同一块、以及 use-after-free 的物理根源：《[free 完再 malloc 为什么拿回同一块](https://github.com/xyz2b/article/blob/main/CodeAdventure/free完再malloc为什么拿回同一块.md)》。
-
-<!--
-======================================================================
-正文已基于 glibc 2.36 (gcc:13 容器 x86-64 + arm64) 实测数据写就。发布前 TODO：
-[x] 顶部可视化页链接替换为 GitHub Pages 占位链接（arena-bins-visualizer.html 待制作）
-[x] 上一篇链接替换为 GitHub blob 链接
-[x] 第三篇 fastbin 那节的下一篇链接，替换为本篇真实链接
-[x] tcache 相关描述已加 glibc 2.26+ 版本注脚（见 3.1 节）
-[x] MALLOC_ARENA_MAX 默认值已确认：8×nproc 从 glibc 2.10 起稳定至今，
-    已在 2.3 节补注脚（64位=8×nproc，32位=2×nproc；默认值0=按公式推算非无限制）
-[x] arena-bins-visualizer.html 可视化页已制作（front/，framework-proto v3 框架；
-    6 幕 38 步：arena分家→malloc_state全字段→chunk解剖→5类bin静态结构→free动态(头插/溢出/consolidate)→malloc查找链。node DOM-shim 跑通 38 步无报错）
-======================================================================
--->
