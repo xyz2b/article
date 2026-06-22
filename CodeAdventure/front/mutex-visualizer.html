@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pthread_mutex_lock 到底锁了什么 · 从用户态 CAS 到内核调度</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --red:#da3633; --yellow:#d29922;
+    --threadA:#58a6ff; --threadB:#a371f7; --threadC:#f778ba;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1600px;margin:0 auto;padding:14px 24px 50px}
+  h1.t{font-size:18px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:9px 14px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:6px 12px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-info{color:var(--dim);font-variant-numeric:tabular-nums;min-width:120px;text-align:center;margin-left:auto;font-size:12px}
+  input[type=range]{width:160px;accent-color:var(--accent)}
+
+  .stage{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px}
+  .stage-title{font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+
+  /* 线程状态机 */
+  .threads{display:flex;gap:12px;margin-bottom:16px}
+  .thread{flex:1;background:var(--panel2);border:2px solid var(--border);border-radius:8px;padding:10px;transition:.3s}
+  .thread.active{border-color:var(--hot);box-shadow:0 0 0 2px rgba(240,136,62,.3)}
+  .thread-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .thread-name{font-family:var(--mono);font-size:12px;font-weight:700}
+  .thread.tA .thread-name{color:var(--threadA)}
+  .thread.tB .thread-name{color:var(--threadB)}
+  .thread.tC .thread-name{color:var(--threadC)}
+  .thread-state{margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:4px;border:1px solid var(--border)}
+  .thread-state.running{background:rgba(59,185,80,.16);border-color:var(--add);color:var(--add)}
+  .thread-state.spinning{background:rgba(210,153,34,.16);border-color:var(--yellow);color:var(--yellow)}
+  .thread-state.sleeping{background:rgba(139,148,158,.16);border-color:var(--dim);color:var(--dim)}
+  .thread-action{font-family:var(--mono);font-size:10.5px;color:var(--text);line-height:1.5;min-height:50px}
+  .thread-action code{background:rgba(88,166,255,.12);padding:1px 4px;border-radius:3px;color:var(--accent)}
+
+  /* 锁状态 */
+  .mutex{background:var(--panel2);border:2px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px}
+  .mutex-header{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--accent);margin-bottom:10px}
+  .mutex-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+  .mfield{background:rgba(10,14,20,.5);border:1px solid var(--border);border-radius:5px;padding:6px 8px;transition:.2s}
+  .mfield.changed{border-color:var(--change);background:rgba(187,128,9,.18);box-shadow:0 0 0 1px var(--change)}
+  .mfield-name{font-family:var(--mono);font-size:9px;color:var(--dim);margin-bottom:3px}
+  .mfield-val{font-family:var(--mono);font-size:13px;color:#fff;font-weight:600}
+  .mfield.lock .mfield-val{color:var(--hot)}
+  .mfield.owner .mfield-val{color:var(--accent)}
+
+  /* 内核等待队列 */
+  .kernel{background:var(--panel2);border:2px solid var(--border);border-radius:8px;padding:12px}
+  .kernel-header{font-family:var(--mono);font-size:11px;font-weight:700;color:#f778ba;margin-bottom:10px}
+  .waitqueue{min-height:60px;border:1px dashed var(--border);border-radius:6px;padding:10px;
+    display:flex;gap:8px;align-items:center;justify-content:center}
+  .waitqueue.empty{opacity:.5}
+  .waitqueue-empty{font-family:var(--mono);font-size:10px;color:var(--faint);font-style:italic}
+  .waiter{background:rgba(163,113,247,.16);border:1px solid var(--threadB);border-radius:5px;
+    padding:5px 10px;font-family:var(--mono);font-size:10px;color:var(--threadB);font-weight:600;
+    animation:enter .3s}
+  @keyframes enter{from{opacity:0;transform:scale(.8)}}
+
+  /* 调度延迟指示器 */
+  .sched-delay{margin-top:8px;font-family:var(--mono);font-size:9px;color:var(--dim);
+    padding:4px 8px;border-radius:4px;background:rgba(187,128,9,.1);border:1px solid var(--border);
+    display:none;align-items:center;gap:6px}
+  .sched-delay.show{display:flex}
+  .sched-delay .label{color:var(--yellow)}
+  .sched-delay .val{color:#fff;font-weight:600;font-variant-numeric:tabular-nums}
+  .sched-delay .tick{animation:tick .8s infinite}
+  @keyframes tick{0%,100%{opacity:.4}50%{opacity:1}}
+
+  /* 注释区 - 固定高度避免滚动 */
+  .narration{background:rgba(88,166,255,.08);border-left:3px solid var(--accent);
+    padding:12px 14px;border-radius:6px;font-size:12.5px;line-height:1.6;color:var(--text);
+    margin-top:14px;min-height:95px;max-height:95px;overflow-y:auto}
+  .narration strong{color:var(--hot)}
+  .narration code{background:rgba(255,255,255,.1);padding:1px 4px;border-radius:3px;font-family:var(--mono)}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">pthread_mutex_lock 到底锁了什么</h1>
+  <p class="sub">从用户态 CAS 到内核调度 · 看锁的 0/1/2 三态 + futex 休眠/唤醒全过程</p>
+
+  <div class="controls">
+    <button id="prev" disabled>上一步</button>
+    <button id="next" class="primary">下一步</button>
+    <button id="auto">自动播放</button>
+    <button id="reset">重置</button>
+    <label style="display:flex;align-items:center;gap:6px;margin-left:12px">
+      <span style="color:var(--dim);font-size:12px">速度</span>
+      <input type="range" id="speed" min="300" max="2000" value="1200" step="100">
+    </label>
+    <div class="step-info"><span id="stepNum">0</span> / <span id="stepTotal">0</span></div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-title">用户态线程状态</div>
+    <div class="threads">
+      <div class="thread tA" id="threadA">
+        <div class="thread-header">
+          <div class="thread-name">线程 A</div>
+          <div class="thread-state running" id="stateA">running</div>
+        </div>
+        <div class="thread-action" id="actionA">等待开始...</div>
+      </div>
+      <div class="thread tB" id="threadB">
+        <div class="thread-header">
+          <div class="thread-name">线程 B</div>
+          <div class="thread-state running" id="stateB">running</div>
+        </div>
+        <div class="thread-action" id="actionB">等待开始...</div>
+      </div>
+      <div class="thread tC" id="threadC">
+        <div class="thread-header">
+          <div class="thread-name">线程 C</div>
+          <div class="thread-state running" id="stateC">running</div>
+        </div>
+        <div class="thread-action" id="actionC">等待开始...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-title">pthread_mutex_t.__data 状态</div>
+    <div class="mutex">
+      <div class="mutex-header">pthread_mutex_t m</div>
+      <div class="mutex-fields">
+        <div class="mfield lock" id="lockField">
+          <div class="mfield-name">__lock</div>
+          <div class="mfield-val" id="lockVal">0</div>
+        </div>
+        <div class="mfield owner" id="ownerField">
+          <div class="mfield-name">__owner</div>
+          <div class="mfield-val" id="ownerVal">0</div>
+        </div>
+        <div class="mfield">
+          <div class="mfield-name">__count</div>
+          <div class="mfield-val">0</div>
+        </div>
+        <div class="mfield">
+          <div class="mfield-name">__kind</div>
+          <div class="mfield-val">0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-title">内核态 futex 等待队列</div>
+    <div class="kernel">
+      <div class="kernel-header">futex wait queue (地址 0x&lt;m.__lock&gt;)</div>
+      <div class="waitqueue empty" id="waitqueue">
+        <div class="waitqueue-empty">（空）</div>
+      </div>
+      <div class="sched-delay" id="schedDelay">
+        <span class="label">调度延迟 (wait_ns):</span>
+        <span class="val" id="schedDelayVal">0 µs</span>
+        <span class="tick">⏱</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="narration" id="narration"></div>
+</div>
+<script>
+const steps = [
+  {
+    threadA: {state: 'running', active: true, action: '准备调用 <code>pthread_mutex_lock(&m)</code>'},
+    threadB: {state: 'running', active: false, action: '等待中...'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 0, changed: false},
+    owner: {val: 0, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>初始状态</strong>：三个线程都在运行，锁空闲（<code>__lock=0</code>，无人持有）'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '执行 CAS(<code>__lock</code>, 0→1)'},
+    threadB: {state: 'running', active: false, action: '等待中...'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 0, changed: false},
+    owner: {val: 0, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 A lock 快路径</strong>：尝试原子操作 CAS，把 <code>__lock</code> 从 0 改成 1'
+  },
+  {
+    threadA: {state: 'running', active: true, action: 'CAS 成功！拿到锁，进入临界区执行 <code>shared++</code>'},
+    threadB: {state: 'running', active: false, action: '等待中...'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 1, changed: true},
+    owner: {val: 400, changed: true},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 A 拿到锁</strong>：<code>__lock</code> 变成 1（有人持有，但无竞争），<code>__owner</code> 记录线程 A 的 TID。全程用户态，~5ns'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中（<code>shared++</code>）...'},
+    threadB: {state: 'running', active: true, action: '调用 <code>pthread_mutex_lock(&m)</code>，尝试 CAS(<code>__lock</code>, 0→1)'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 1, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 B 来抢锁</strong>：线程 A 还在临界区里，线程 B 也想 lock'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中...'},
+    threadB: {state: 'spinning', active: true, action: 'CAS 失败！（<code>__lock</code> 已是 1），执行 CAS(<code>__lock</code>, 1→2)'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 1, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 B 抢锁失败</strong>：CAS 发现 <code>__lock=1</code>（被占），准备把它改成 2（标记"有人在等"）'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中...'},
+    threadB: {state: 'spinning', active: true, action: 'CAS(<code>__lock</code>, 1→2) 成功，准备陷内核'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 2, changed: true},
+    owner: {val: 400, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>标记"有竞争"</strong>：<code>__lock</code> 变成 2，告诉 unlock 时"有人在等，需要叫醒"'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中...'},
+    threadB: {state: 'sleeping', active: true, action: '系统调用 <code>futex(FUTEX_WAIT, 2)</code>，陷入内核'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 2, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 B 慢路径开始</strong>：调用 futex 系统调用，告诉内核"我要在这个地址上睡，除非 <code>__lock</code> 的值变了"'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中...'},
+    threadB: {state: 'sleeping', active: true, action: '内核检查 <code>__lock</code> 仍=2，状态改为 TASK_INTERRUPTIBLE'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 2, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>内核挂起前校验</strong>：内核再次检查 <code>__lock</code> 是否真的还是 2（防止刚被释放）—— 确认是 2，继续挂起流程'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中...'},
+    threadB: {state: 'sleeping', active: true, action: '💤 被挂到 futex 等待队列，让出 CPU，完全不占 CPU'},
+    threadC: {state: 'running', active: false, action: '等待中...'},
+    lock: {val: 2, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: ['线程 B (tid=402)'],
+    schedDelay: 0,
+    narration: '<strong>线程 B 真正睡着</strong>：内核把线程 B 挂到 futex 等待队列（以 <code>&m.__lock</code> 为 key 的哈希桶），状态=TASK_INTERRUPTIBLE，从运行队列摘下，<code>wchan=futex_wait_queue</code>'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区执行中...'},
+    threadB: {state: 'sleeping', active: false, action: '💤 睡眠中...'},
+    threadC: {state: 'running', active: true, action: '调用 <code>pthread_mutex_lock(&m)</code>，CAS 失败，标记 <code>__lock</code>=2（已经是 2）'},
+    lock: {val: 2, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: ['线程 B (tid=402)'],
+    schedDelay: 0,
+    narration: '<strong>线程 C 也来抢锁</strong>：发现 <code>__lock=2</code>（有人占且有人等），准备陷内核'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '临界区即将结束，准备 unlock...'},
+    threadB: {state: 'sleeping', active: false, action: '💤 睡眠中...'},
+    threadC: {state: 'spinning', active: true, action: '系统调用 <code>futex(FUTEX_WAIT, 2)</code>，陷入内核...'},
+    lock: {val: 2, changed: false},
+    owner: {val: 400, changed: false},
+    waiters: ['线程 B (tid=402)'],
+    schedDelay: 0,
+    narration: '<strong>线程 C 陷内核</strong>：正在执行系统调用，但此时线程 A 即将释放锁…'
+  },
+  {
+    threadA: {state: 'running', active: true, action: '调用 <code>pthread_mutex_unlock(&m)</code>，<code>__lock</code> 减 1'},
+    threadB: {state: 'sleeping', active: false, action: '💤 睡眠中...'},
+    threadC: {state: 'spinning', active: true, action: '线程 C 的系统调用还在路上（用户态→内核态切换中）'},
+    lock: {val: 1, changed: true},
+    owner: {val: 400, changed: false},
+    waiters: ['线程 B (tid=402)'],
+    schedDelay: 0,
+    narration: '<strong>竞态窗口！</strong>线程 A unlock 把 <code>__lock</code> 从 2 改成 1，而线程 C 的 futex 系统调用还在陷入内核的路上'
+  },
+  {
+    threadA: {state: 'running', active: true, action: 'unlock：写 <code>__lock</code>=0，调 <code>futex(FUTEX_WAKE, 1)</code>'},
+    threadB: {state: 'running', active: true, action: '被唤醒！状态→TASK_RUNNING，进运行队列'},
+    threadC: {state: 'spinning', active: true, action: '内核检查：<code>__lock</code> 现在是 0，不等于预期的 2！'},
+    lock: {val: 0, changed: true},
+    owner: {val: 0, changed: true},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>关键：内核挂起前最后校验</strong>！线程 C 陷入内核后，内核发现 <code>__lock</code> 已经是 0（不是预期的 2），说明锁在系统调用路上被释放了。内核<strong>不挂起线程 C</strong>，直接返回 <code>EAGAIN</code>。同时线程 B 被 WAKE 唤醒'
+  },
+  {
+    threadA: {state: 'running', active: false, action: 'unlock 完成，继续往下跑'},
+    threadB: {state: 'running', active: false, action: '在运行队列排队...'},
+    threadC: {state: 'running', active: true, action: '<code>futex()</code> 返回 EAGAIN，回到用户态，重新 CAS(<code>__lock</code>, 0→1)'},
+    lock: {val: 0, changed: false},
+    owner: {val: 0, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 C 没睡觉，直接重试</strong>：因为内核发现"值变了"，线程 C 没有被挂起，而是立刻返回用户态重新争锁。这就是 futex 比"拿不到就睡"聪明的地方——抓住"锁刚被放"的时间窗口'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'running', active: false, action: '在运行队列排队（刚被唤醒，还没上 CPU）'},
+    threadC: {state: 'running', active: true, action: 'CAS 成功！拿到锁'},
+    lock: {val: 1, changed: true},
+    owner: {val: 403, changed: true},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 C 抢到锁</strong>：因为没睡眠、直接重试，线程 C 反而比被唤醒的线程 B 更快拿到锁（线程 B 还在运行队列排队等调度器选中）'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'running', active: true, action: '被调度器选中，醒来，尝试 CAS(<code>__lock</code>, 0→1)'},
+    threadC: {state: 'running', active: true, action: '临界区执行中...'},
+    lock: {val: 1, changed: false},
+    owner: {val: 403, changed: false},
+    waiters: [],
+    schedDelay: 680,
+    narration: '<strong>线程 B 醒来但锁已被抢</strong>：经过调度延迟，线程 B 被选中上 CPU，但发现锁已经被线程 C 占了'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'spinning', active: true, action: 'CAS 失败，标记 <code>__lock</code>=2，再次陷内核'},
+    threadC: {state: 'running', active: true, action: '临界区执行中...'},
+    lock: {val: 2, changed: true},
+    owner: {val: 403, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 B 再次走慢路径</strong>：CAS 失败，把 <code>__lock</code> 改成 2，准备再次睡眠'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'sleeping', active: true, action: '💤 再次被挂到 futex 等待队列'},
+    threadC: {state: 'running', active: true, action: '临界区执行中...'},
+    lock: {val: 2, changed: false},
+    owner: {val: 403, changed: false},
+    waiters: ['线程 B (tid=402)'],
+    schedDelay: 0,
+    narration: '<strong>线程 B 再次睡眠</strong>：这次内核检查 <code>__lock</code> 仍是 2，挂起成功'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'sleeping', active: false, action: '💤 睡眠中...'},
+    threadC: {state: 'running', active: true, action: '调用 <code>pthread_mutex_unlock(&m)</code>'},
+    lock: {val: 2, changed: false},
+    owner: {val: 403, changed: false},
+    waiters: ['线程 B (tid=402)'],
+    schedDelay: 0,
+    narration: '<strong>线程 C unlock</strong>：临界区执行完，释放锁'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'running', active: true, action: '被唤醒！进运行队列'},
+    threadC: {state: 'running', active: false, action: 'unlock 完成'},
+    lock: {val: 0, changed: true},
+    owner: {val: 0, changed: true},
+    waiters: [],
+    schedDelay: 150,
+    narration: '<strong>线程 C unlock，线程 B 被唤醒</strong>：<code>__lock</code> 写回 0，FUTEX_WAKE 叫醒线程 B'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'running', active: true, action: '被调度器选中，CAS 成功拿到锁'},
+    threadC: {state: 'running', active: false, action: '继续执行...'},
+    lock: {val: 1, changed: true},
+    owner: {val: 402, changed: true},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 B 终于拿到锁</strong>：经历两轮"睡眠→唤醒"，线程 B 终于成功获得锁'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'running', active: true, action: 'unlock，无竞争，直接完成'},
+    threadC: {state: 'running', active: false, action: '继续执行...'},
+    lock: {val: 0, changed: true},
+    owner: {val: 0, changed: true},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>线程 B unlock</strong>：<code>__lock</code> 减 1 后=0，没人等，不进内核'
+  },
+  {
+    threadA: {state: 'running', active: false, action: '继续执行...'},
+    threadB: {state: 'running', active: false, action: '继续执行...'},
+    threadC: {state: 'running', active: false, action: '继续执行...'},
+    lock: {val: 0, changed: false},
+    owner: {val: 0, changed: false},
+    waiters: [],
+    schedDelay: 0,
+    narration: '<strong>演示完成</strong>。关键要点：<br>• <strong>futex 挂起前最后校验</strong>：线程 C 陷内核后，内核发现 <code>__lock</code> 不是预期值（锁在路上被释放了），直接返回 EAGAIN，不挂起<br>• 这避免了"明明锁已释放还傻乎乎睡觉"，抓住"锁刚被放"的时间窗口<br>• 无竞争 lock/unlock 纯用户态 CAS（~5ns）<br>• 有竞争：陷内核 → 睡眠 → 唤醒 → 调度（总耗时微秒到毫秒级）<br>• <code>__lock</code> 三态：0=空闲，1=持有无竞争，2=持有有竞争'
+  }
+];
+
+let currentStep = 0;
+let autoTimer = null;
+
+const prevBtn = document.getElementById('prev');
+const nextBtn = document.getElementById('next');
+const autoBtn = document.getElementById('auto');
+const resetBtn = document.getElementById('reset');
+const speedSlider = document.getElementById('speed');
+const stepNum = document.getElementById('stepNum');
+const stepTotal = document.getElementById('stepTotal');
+
+const threadA = document.getElementById('threadA');
+const threadB = document.getElementById('threadB');
+const threadC = document.getElementById('threadC');
+const stateA = document.getElementById('stateA');
+const stateB = document.getElementById('stateB');
+const stateC = document.getElementById('stateC');
+const actionA = document.getElementById('actionA');
+const actionB = document.getElementById('actionB');
+const actionC = document.getElementById('actionC');
+const lockField = document.getElementById('lockField');
+const lockVal = document.getElementById('lockVal');
+const ownerField = document.getElementById('ownerField');
+const ownerVal = document.getElementById('ownerVal');
+const waitqueue = document.getElementById('waitqueue');
+const narration = document.getElementById('narration');
+const schedDelay = document.getElementById('schedDelay');
+const schedDelayVal = document.getElementById('schedDelayVal');
+
+stepTotal.textContent = steps.length;
+
+function render() {
+  const s = steps[currentStep];
+
+  // 线程 A
+  stateA.textContent = s.threadA.state;
+  stateA.className = 'thread-state ' + s.threadA.state;
+  actionA.innerHTML = s.threadA.action;
+  threadA.classList.toggle('active', s.threadA.active);
+
+  // 线程 B
+  stateB.textContent = s.threadB.state;
+  stateB.className = 'thread-state ' + s.threadB.state;
+  actionB.innerHTML = s.threadB.action;
+  threadB.classList.toggle('active', s.threadB.active);
+
+  // 线程 C
+  stateC.textContent = s.threadC.state;
+  stateC.className = 'thread-state ' + s.threadC.state;
+  actionC.innerHTML = s.threadC.action;
+  threadC.classList.toggle('active', s.threadC.active);
+
+  // 锁字段
+  lockVal.textContent = s.lock.val;
+  lockField.classList.toggle('changed', s.lock.changed);
+  ownerVal.textContent = s.owner.val;
+  ownerField.classList.toggle('changed', s.owner.changed);
+
+  // 等待队列
+  waitqueue.innerHTML = s.waiters.length === 0
+    ? '<div class="waitqueue-empty">（空）</div>'
+    : s.waiters.map(w => `<div class="waiter">${w}</div>`).join('');
+  waitqueue.classList.toggle('empty', s.waiters.length === 0);
+
+  // 调度延迟指示器
+  if (s.schedDelay > 0) {
+    schedDelay.classList.add('show');
+    schedDelayVal.textContent = (s.schedDelay / 1000).toFixed(2) + ' ms';
+  } else {
+    schedDelay.classList.remove('show');
+  }
+
+  // 注释
+  narration.innerHTML = s.narration;
+
+  // 按钮状态
+  stepNum.textContent = currentStep + 1;
+  prevBtn.disabled = currentStep === 0;
+  nextBtn.disabled = currentStep === steps.length - 1;
+}
+
+function next() {
+  if (currentStep < steps.length - 1) {
+    currentStep++;
+    render();
+  }
+}
+
+function prev() {
+  if (currentStep > 0) {
+    currentStep--;
+    render();
+  }
+}
+
+function reset() {
+  stopAuto();
+  currentStep = 0;
+  render();
+}
+
+function startAuto() {
+  if (autoTimer) return;
+  autoBtn.textContent = '停止';
+  autoTimer = setInterval(() => {
+    if (currentStep < steps.length - 1) {
+      next();
+    } else {
+      stopAuto();
+    }
+  }, 2500 - speedSlider.value);
+}
+
+function stopAuto() {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    autoBtn.textContent = '自动播放';
+  }
+}
+
+function toggleAuto() {
+  if (autoTimer) {
+    stopAuto();
+  } else {
+    startAuto();
+  }
+}
+
+prevBtn.addEventListener('click', prev);
+nextBtn.addEventListener('click', next);
+autoBtn.addEventListener('click', toggleAuto);
+resetBtn.addEventListener('click', reset);
+
+render();
+</script>
+</body>
+</html>
