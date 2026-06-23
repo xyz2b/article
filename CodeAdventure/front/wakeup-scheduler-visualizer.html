@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>线程被唤醒后为什么不一定立刻运行 · 多 CPU 调度</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --green:#238636; --yellow:#d29922;
+    --purple:#a371f7; --pink:#f778ba; --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5}
+  .wrap{max-width:1500px;margin:0 auto;padding:14px 24px 44px}
+  h1{font-size:18px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 14px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px}
+  button{font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:6px 12px;cursor:pointer;transition:.12s}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  input[type=range]{width:130px;accent-color:var(--accent)}
+  .counter{margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:12px}
+
+  .layout{display:grid;grid-template-columns:270px 1fr;gap:12px;align-items:start}
+  @media(max-width:980px){.layout{grid-template-columns:1fr}.wrap{padding:12px 14px 36px}}
+  .panel,.stage{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .ttl{padding:8px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);
+    font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
+  .bd{padding:12px}
+
+  .flow{position:relative;display:flex;flex-direction:column;gap:8px}
+  .flow::before{content:"";position:absolute;left:18px;top:18px;bottom:18px;width:2px;background:var(--border)}
+  .flow-step{position:relative;display:grid;grid-template-columns:38px 1fr;gap:8px;align-items:start;
+    border:1px solid var(--border);border-radius:9px;background:rgba(10,14,20,.42);padding:8px;
+    cursor:pointer;transition:.18s}
+  .flow-step.on{border-color:var(--hot);background:rgba(240,136,62,.14);box-shadow:0 0 0 1px rgba(240,136,62,.28)}
+  .flow-step.done{border-color:rgba(63,185,80,.42)}
+  .dot{position:relative;z-index:1;width:22px;height:22px;border-radius:50%;border:1px solid var(--border);
+    background:var(--panel2);display:grid;place-items:center;font-family:var(--mono);font-size:10px;color:var(--dim)}
+  .flow-step.on .dot{border-color:var(--hot);color:#fff;background:rgba(240,136,62,.25)}
+  .flow-step.done .dot{border-color:var(--green);color:var(--green)}
+  .flow-name{font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;margin-bottom:2px}
+  .flow-note{font-size:11.5px;color:var(--dim)}
+
+  .stage{padding:14px;background-image:repeating-linear-gradient(0deg,transparent 0 31px,rgba(255,255,255,.012) 31px 32px)}
+  .kernel-strip{display:grid;grid-template-columns:1fr 1.35fr;gap:12px;margin-bottom:12px}
+  @media(max-width:880px){.kernel-strip{grid-template-columns:1fr}}
+  .box{background:var(--panel2);border:1px solid var(--border);border-radius:11px;overflow:hidden}
+  .box.hot{border-color:var(--hot);box-shadow:0 0 0 1px rgba(240,136,62,.34)}
+  .box-hd{padding:8px 11px;border-bottom:1px solid var(--border);font-family:var(--mono);
+    font-size:11px;font-weight:700;color:#fff}
+  .box-bd{padding:11px}
+  .kernel .box-hd{color:var(--pink)}.wake .box-hd{color:var(--hot)}
+
+  .rail{position:relative;min-height:78px;border:1px dashed var(--border);border-radius:9px;
+    padding:14px 10px 10px;background:rgba(10,14,20,.38);display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+  .rail::before{content:"";position:absolute;left:10px;right:10px;top:10px;height:2px;background:var(--border)}
+  .rail.hot{border-color:var(--hot);background:rgba(240,136,62,.08)}
+  .empty{font-family:var(--mono);font-size:10px;color:var(--faint);font-style:italic;align-self:center}
+  .task{position:relative;margin-top:11px;font-family:var(--mono);font-size:10.5px;font-weight:700;
+    border:1px solid var(--border);border-radius:7px;padding:6px 8px;background:rgba(10,14,20,.72);min-width:70px}
+  .task::before{content:"";position:absolute;left:50%;top:-12px;width:1px;height:12px;background:currentColor;opacity:.72}
+  .task.sleeping{color:var(--dim);border-color:var(--dim);background:rgba(139,148,158,.12)}
+  .task.waking{color:var(--yellow);border-color:var(--yellow);background:rgba(210,153,34,.13)}
+  .task.runnable{color:var(--accent);border-color:var(--accent);background:rgba(88,166,255,.13)}
+  .task.running{color:var(--green);border-color:var(--green);background:rgba(63,185,80,.13)}
+  .task.picked{color:var(--yellow);border-color:var(--yellow);background:rgba(210,153,34,.13)}
+  .task.prev{color:var(--purple);border-color:var(--purple);background:rgba(163,113,247,.12)}
+  .task.idle{color:var(--dim);border-color:var(--dim)}
+  .subtask{display:block;color:var(--dim);font-size:9px;font-weight:500;margin-top:2px}
+
+  .wake-path{min-height:78px;border:1px solid var(--border);border-radius:9px;background:rgba(10,14,20,.42);
+    padding:10px;font-size:12px;color:var(--dim);line-height:1.65}
+  .wake-path strong{color:var(--hot)}
+  .wake-path.hot{border-color:var(--hot);background:rgba(240,136,62,.09)}
+
+  .cpu-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  @media(max-width:1180px){.cpu-grid{grid-template-columns:1fr}}
+  .cpu-card{background:var(--panel2);border:1px solid var(--border);border-radius:11px;overflow:hidden;transition:.18s}
+  .cpu-card.target{border-color:var(--accent);box-shadow:0 0 0 1px rgba(88,166,255,.32)}
+  .cpu-card.hot{border-color:var(--hot);box-shadow:0 0 0 1px rgba(240,136,62,.34)}
+  .cpu-hd{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--border);
+    font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent)}
+  .cpu-tag{margin-left:auto;font-size:9px;color:var(--dim);border:1px solid var(--border);border-radius:999px;padding:1px 7px}
+  .cpu-body{padding:10px;display:grid;gap:10px}
+  .slot-title{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:5px}
+  .current{min-height:76px;border:1px solid rgba(88,166,255,.28);border-radius:9px;background:rgba(88,166,255,.06);
+    display:flex;align-items:flex-start;justify-content:center;padding:8px}
+  .current.hot{border-color:var(--hot);background:rgba(240,136,62,.1)}
+  .rq.hot{border-color:var(--hot);background:rgba(240,136,62,.08)}
+
+  .explain{margin-top:12px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .explain-title{padding:8px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);
+    font-size:11px;font-weight:700;color:#fff}
+  .explain-text{padding:11px 12px;font-size:13px;line-height:1.7;min-height:86px}
+  .explain-text strong{color:var(--hot)}
+  code{font-family:var(--mono);background:rgba(255,255,255,.08);color:#79c0ff;padding:1px 4px;border-radius:3px}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+  @media(max-width:760px){.metrics{grid-template-columns:1fr 1fr}}
+  .metric{border:1px solid var(--border);border-radius:9px;background:rgba(10,14,20,.42);padding:9px}
+  .metric.hot{border-color:var(--hot);background:rgba(240,136,62,.12)}
+  .metric .k{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:4px}
+  .metric .v{font-family:var(--mono);font-size:15px;font-weight:700;color:#fff}
+  .metric.wait .v{color:var(--yellow)}.metric.slice .v{color:var(--accent)}
+  .legend{margin-top:12px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;
+    display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dim)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:11px;height:11px;border-radius:3px;border:1px solid currentColor}
+  .sw.sleeping{color:var(--dim);background:rgba(139,148,158,.16)}
+  .sw.waking{color:var(--yellow);background:rgba(210,153,34,.18)}
+  .sw.runnable{color:var(--accent);background:rgba(88,166,255,.18)}
+  .sw.prev{color:var(--purple);background:rgba(163,113,247,.18)}
+  .sw.running{color:var(--green);background:rgba(63,185,80,.18)}
+  .sw.picked{color:var(--yellow);background:rgba(210,153,34,.18)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>一个线程被唤醒后，为什么不一定立刻运行</h1>
+  <p class="sub">多 CPU 视角：Task-B 和 Task-I 起初都睡在 futex 队列里；它们被先后唤醒，再分别挂到目标 CPU 的 runqueue</p>
+
+  <div class="controls">
+    <button id="prev" disabled>← 上一步</button>
+    <button id="next" class="primary">下一步 →</button>
+    <button id="auto">▶ 自动</button>
+    <button id="reset">⏮ 重置</button>
+    <label style="display:flex;align-items:center;gap:6px;margin-left:8px">
+      <span style="color:var(--dim);font-size:12px">速度</span>
+      <input type="range" id="speed" min="500" max="2200" value="1300" step="100">
+    </label>
+    <div class="counter"><span id="idx">1</span> / <span id="total">0</span></div>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <div class="ttl">流程图</div>
+      <div class="bd"><div class="flow" id="flow"></div></div>
+    </div>
+
+    <div class="stage">
+      <div class="kernel-strip">
+        <section class="box kernel" id="futexBox">
+          <div class="box-hd">futex wait queue</div>
+          <div class="box-bd"><div class="rail" id="futexQueue"></div></div>
+        </section>
+        <section class="box wake" id="wakeBox">
+          <div class="box-hd">内核唤醒 / 选 CPU / 调度判断</div>
+          <div class="box-bd"><div class="wake-path" id="wakePath"></div></div>
+        </section>
+      </div>
+
+      <div class="cpu-grid" id="cpuGrid"></div>
+
+      <div class="explain">
+        <div class="explain-title" id="title">当前步骤</div>
+        <div class="explain-text" id="explain"></div>
+      </div>
+
+      <div class="metrics">
+        <div class="metric" id="stateBox"><div class="k">Task-B 状态</div><div class="v" id="stateVal">S</div></div>
+        <div class="metric" id="targetBox"><div class="k">目标 CPU</div><div class="v" id="targetVal">-</div></div>
+        <div class="metric wait" id="waitBox"><div class="k">wait_ns delta</div><div class="v" id="waitVal">0 us</div></div>
+        <div class="metric slice" id="sliceBox"><div class="k">slices delta</div><div class="v" id="sliceVal">+0</div></div>
+      </div>
+
+      <div class="legend">
+        <span><i class="sw sleeping"></i>sleeping：睡眠，不在 runqueue</span>
+        <span><i class="sw waking"></i>waking：内核正在唤醒</span>
+        <span><i class="sw runnable"></i>runnable：在 runqueue 等 CPU</span>
+        <span><i class="sw prev"></i>prev：刚被换下或即将换下</span>
+        <span><i class="sw picked"></i>picked：已被调度器选中</span>
+        <span><i class="sw running"></i>running：正在 CPU 上执行</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const FLOW = [
+  ['睡眠','Task-B / Task-I 都在 futex wait queue'],
+  ['唤醒 B','Task-A unlock，先唤醒 Task-B'],
+  ['B 入队','Task-B 挂到 CPU1 runqueue'],
+  ['B 排队','CPU1 current 还不是 Task-B'],
+  ['选择 B','CPU1 scheduler pick Task-B'],
+  ['B 运行','Task-B 拿到锁并执行'],
+  ['唤醒 I','Task-I 在 futex 队列中变为 waking'],
+  ['I 入队','Task-I 挂到 CPU2 runqueue'],
+  ['I 运行','CPU2 scheduler 选中 Task-I']
+];
+
+const EMPTY_CPUS = [
+  {name:'CPU0', current:['Task-A|running / unlock path'], rq:['Task-C|runnable','Task-D|runnable']},
+  {name:'CPU1', current:['Task-E|running'], rq:['Task-F|runnable']},
+  {name:'CPU2', current:['Idle'], rq:[]}
+];
+
+const STEPS = [
+  {
+    at:0, title:'Task-B 和 Task-I 都睡在 futex 队列上',
+    futex:['Task-B|sleeping / futex_wait_queue','Task-I|sleeping / futex_wait_queue'],
+    wake:'Task-B 和 Task-I 都在 futex 子系统的等待队列里。它们不是 runnable，也没有挂在任何 CPU 的 runqueue 上。',
+    target:'-', state:'S', wait:0, slices:0, hot:['state','futex'],
+    cpus:EMPTY_CPUS,
+    explain:'Task-B 和 Task-I 都抢不到 mutex，进入 <code>futex(FUTEX_WAIT)</code>。这时它们是睡眠 task，挂在同一个 futex 等待队列上，不参与任何 CPU 的调度竞争。'
+  },
+  {
+    at:1, title:'Task-A unlock，第一次 futex_wake 先摘下 Task-B',
+    futex:['Task-B|waking / dequeue','Task-I|sleeping / still queued'],
+    wake:'<strong>futex_wake(..., 1)</strong> 根据 futex word 找到等待队列，这次只摘下 Task-B；Task-I 还留在 futex 队列里。',
+    target:'-', state:'S → waking', wait:0, slices:0, hot:['state','wake','futex'],
+    cpus:EMPTY_CPUS,
+    explain:'一次 <code>FUTEX_WAKE</code> 可以只唤醒一个等待者。这里 Task-B 先被唤醒，Task-I 仍然睡在 futex 队列里。'
+  },
+  {
+    at:2, title:'内核给 Task-B 选择目标 CPU',
+    futex:['Task-I|sleeping / still queued'],
+    wake:'<strong>try_to_wake_up()</strong> 把 Task-B 变成 TASK_RUNNING，并选择目标 CPU1；Task-I 仍然没有被唤醒。',
+    target:'B→CPU1', state:'TASK_RUNNING', wait:10, slices:0, hot:['state','wake','target','wait','futex'],
+    cpus:EMPTY_CPUS,
+    explain:'真实 Linux 中唤醒路径会选择目标 CPU，之后把 task 挂到那个 CPU 的 runqueue。此时只有 Task-B 变成 runnable；Task-I 仍是 sleeping。'
+  },
+  {
+    at:3, title:'Task-B 挂到 CPU1 的 runqueue，Task-I 仍睡着',
+    futex:['Task-I|sleeping / still queued'],
+    wake:'enqueue_task(Task-B, rq_cpu1)：Task-B 已经离开 futex 队列，进入 CPU1 的运行队列；Task-I 还没被第二次 wake。',
+    target:'B→CPU1', state:'runnable', wait:80, slices:0, hot:['target','rq1','wait','futex'],
+    cpus:[
+      {name:'CPU0', current:['Task-A|running / unlock return'], rq:['Task-C|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-E|running'], rq:['Task-B|runnable / TASK_RUNNING','Task-F|runnable','Task-G|runnable']},
+      {name:'CPU2', current:['Idle'], rq:[]}
+    ],
+    explain:'现在只有 Task-B 已经“醒了”。它挂在 CPU1 runqueue 上，<code>TASK_RUNNING</code> 表示可运行，不表示已经占用 CPU。Task-I 还在 futex 队列里。'
+  },
+  {
+    at:4, title:'Task-B 在 CPU1 等，Task-I 仍在 futex 队列',
+    futex:['Task-I|sleeping / still queued'],
+    wake:'Task-B 已经进入普通调度系统；Task-I 仍然睡在 futex 队列里。只有持锁者释放锁并再次 <strong>futex_wake</strong> 时，它才会被唤醒。',
+    target:'B→CPU1', state:'runnable', wait:890, slices:0, hot:['rq1','cur1','futex','wait'],
+    cpus:[
+      {name:'CPU0', current:['Task-C|running'], rq:['Task-A|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-E|running'], rq:['Task-F|runnable','Task-B|runnable / waiting','Task-G|runnable','Task-H|runnable']},
+      {name:'CPU2', current:['Idle'], rq:[]}
+    ],
+    explain:'这一步只说明调度延迟：Task-B 已经 runnable，但 CPU1 current 是 Task-E，所以 Task-B 的 <code>wait_ns</code> 增长。Task-I 还没有被唤醒。'
+  },
+  {
+    at:5, title:'CPU1 的调度器 pick_next_task 选中 Task-B',
+    futex:['Task-I|sleeping / still queued'],
+    wake:'CPU1 scheduler 执行 <strong>pick_next_task()</strong> 选中 Task-B。Task-I 还在 futex 队列里，不能被 CPU 调度。',
+    target:'B→CPU1', state:'runnable', wait:2937, slices:0, hot:['wake','rq1','wait','futex'],
+    cpus:[
+      {name:'CPU0', current:['Task-C|running'], rq:['Task-A|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-E|prev running'], rq:['Task-B|picked next','Task-F|runnable','Task-G|runnable']},
+      {name:'CPU2', current:['Idle'], rq:[]}
+    ],
+    explain:'调度器不是按“刚被唤醒”直接插队，也不是简单 FIFO。Task-B 只是 CPU1 runqueue 里的候选 task，直到本步才被选中。'
+  },
+  {
+    at:6, title:'context_switch 后，Task-B 运行并重新拿到锁',
+    futex:['Task-I|sleeping / still queued'],
+    wake:'内核执行 <strong>context_switch(prev, Task-B)</strong>，恢复 Task-B 的现场。Task-B 从 futex_wait 返回用户态，重新 CAS，拿到 mutex。',
+    target:'B→CPU1', state:'running', wait:2937, slices:1, hot:['state','cur1','slices','futex'],
+    cpus:[
+      {name:'CPU0', current:['Task-C|running'], rq:['Task-A|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-B|running / holds mutex'], rq:['Task-F|runnable','Task-G|runnable']},
+      {name:'CPU2', current:['Idle'], rq:[]}
+    ],
+    explain:'只有到了这里，Task-B 才真正运行在 CPU1 上，并重新进入用户态抢锁。因为 Task-I 仍在 futex 队列里，它还不会运行。'
+  },
+  {
+    at:7, title:'Task-B unlock，第二次 futex_wake 正在唤醒 Task-I',
+    futex:['Task-I|waking / dequeue'],
+    wake:'Task-B 临界区结束后执行 unlock。因为 futex 队列里还有 Task-I，这次 <strong>futex_wake(..., 1)</strong> 正在摘下 Task-I。',
+    target:'B→CPU1 / I→CPU2', state:'userspace', wait:2937, slices:1, hot:['cur1','futex','wake'],
+    cpus:[
+      {name:'CPU0', current:['Task-C|running'], rq:['Task-A|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-B|running / unlock'], rq:['Task-F|runnable','Task-G|runnable']},
+      {name:'CPU2', current:['Idle'], rq:[]}
+    ],
+    explain:'这是你指出的那一步：Task-I 还在内核 futex 队列语境里，但状态已经从 sleeping 变成 waking/dequeue。页面用黄色表示“正在被唤醒”。'
+  },
+  {
+    at:8, title:'Task-I 离开 futex 队列，进入 CPU2 runqueue',
+    futex:[],
+    wake:'try_to_wake_up(Task-I) 把它变成 TASK_RUNNING，并选择目标 CPU2；enqueue_task(Task-I, rq_cpu2) 后，它挂在 CPU2 runqueue 上。',
+    target:'B→CPU1 / I→CPU2', state:'userspace', wait:2937, slices:1, hot:['cur1','rq2'],
+    cpus:[
+      {name:'CPU0', current:['Task-C|running'], rq:['Task-A|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-B|running / after unlock'], rq:['Task-F|runnable','Task-G|runnable']},
+      {name:'CPU2', current:['Idle'], rq:['Task-I|runnable / TASK_RUNNING']}
+    ],
+    explain:'被唤醒之后，Task-I 也不会直接运行。它先变成 runnable，挂到目标 CPU2 的 runqueue，等待 CPU2 的调度器选择。'
+  },
+  {
+    at:9, title:'CPU2 scheduler 选中 Task-I，Task-I 才真正运行',
+    futex:[],
+    wake:'CPU2 的调度器从自己的 runqueue 里选中 Task-I，然后执行上下文切换。CPU2 current 变成 Task-I。',
+    target:'B→CPU1 / I→CPU2', state:'userspace', wait:2937, slices:1, hot:['cur1','cur2'],
+    cpus:[
+      {name:'CPU0', current:['Task-C|running'], rq:['Task-A|runnable','Task-D|runnable']},
+      {name:'CPU1', current:['Task-B|running / after unlock'], rq:['Task-F|runnable','Task-G|runnable']},
+      {name:'CPU2', current:['Task-I|running'], rq:[]}
+    ],
+    explain:'完整结论：<strong>futex_wake 负责把等待 task 从 futex 队列移到某个 CPU 的 runqueue；它还要等目标 CPU 的调度器选中，才会真正成为 current 并运行。</strong>'
+  }
+];
+
+let current = 0;
+let timer = null;
+
+const els = {
+  flow:document.getElementById('flow'), futexQueue:document.getElementById('futexQueue'),
+  wakePath:document.getElementById('wakePath'), cpuGrid:document.getElementById('cpuGrid'),
+  futexBox:document.getElementById('futexBox'), wakeBox:document.getElementById('wakeBox'),
+  title:document.getElementById('title'), explain:document.getElementById('explain'),
+  stateVal:document.getElementById('stateVal'), targetVal:document.getElementById('targetVal'),
+  waitVal:document.getElementById('waitVal'), sliceVal:document.getElementById('sliceVal'),
+  stateBox:document.getElementById('stateBox'), targetBox:document.getElementById('targetBox'),
+  waitBox:document.getElementById('waitBox'), sliceBox:document.getElementById('sliceBox'),
+  idx:document.getElementById('idx'), total:document.getElementById('total'),
+  prev:document.getElementById('prev'), next:document.getElementById('next'),
+  auto:document.getElementById('auto'), reset:document.getElementById('reset'), speed:document.getElementById('speed')
+};
+
+function task(text){
+  const [name, sub] = text.split('|');
+  const status = (sub || name).toLowerCase();
+  let cls = 'runnable';
+  if(name.includes('Idle')) cls = 'idle';
+  else if(status.includes('sleep')) cls = 'sleeping';
+  else if(status.includes('waking') || status.includes('dequeue')) cls = 'waking';
+  else if(status.includes('picked')) cls = 'picked';
+  else if(status.includes('prev')) cls = 'prev';
+  else if(status.includes('running') || status.includes('return')) cls = 'running';
+  else if(status.includes('runnable') || status.includes('task_running')) cls = 'runnable';
+  return `<div class="task ${cls}">${name}${sub ? `<span class="subtask">${sub}</span>` : ''}</div>`;
+}
+
+function renderRail(items){
+  return items.length ? items.map(task).join('') : '<div class="empty">空</div>';
+}
+
+function fmtUs(v){
+  return v >= 1000 ? (v / 1000).toFixed(2) + ' ms' : v + ' us';
+}
+
+function init(){
+  els.total.textContent = STEPS.length;
+  els.flow.innerHTML = FLOW.map((f,i)=>`
+    <div class="flow-step" data-i="${i}">
+      <div class="dot">${i + 1}</div>
+      <div><div class="flow-name">${f[0]}</div><div class="flow-note">${f[1]}</div></div>
+    </div>`).join('');
+  els.flow.querySelectorAll('.flow-step').forEach(btn=>{
+    btn.addEventListener('click',()=>{stopAuto();current=Number(btn.dataset.i);render();});
+  });
+}
+
+function renderCpuGrid(s){
+  els.cpuGrid.innerHTML = s.cpus.map((cpu, i)=>{
+    const cpuId = 'cpu' + i;
+    const hotCurrent = s.hot.includes('cur' + i);
+    const hotRq = s.hot.includes('rq' + i);
+    const target = s.target.includes(cpu.name);
+    return `
+      <section class="cpu-card ${target ? 'target' : ''} ${hotCurrent || hotRq ? 'hot' : ''}">
+        <div class="cpu-hd">${cpu.name}<span class="cpu-tag">${target ? 'target rq' : 'own runqueue'}</span></div>
+        <div class="cpu-body">
+          <div>
+            <div class="slot-title">current</div>
+            <div class="current ${hotCurrent ? 'hot' : ''}" id="${cpuId}-current">${renderRail(cpu.current)}</div>
+          </div>
+          <div>
+            <div class="slot-title">runqueue</div>
+            <div class="rail rq ${hotRq ? 'hot' : ''}" id="${cpuId}-rq">${renderRail(cpu.rq)}</div>
+          </div>
+        </div>
+      </section>`;
+  }).join('');
+}
+
+function render(){
+  const s = STEPS[current];
+  els.flow.querySelectorAll('.flow-step').forEach((el,i)=>{
+    el.classList.toggle('on', i === current);
+    el.classList.toggle('done', i < current);
+  });
+  els.futexQueue.innerHTML = renderRail(s.futex);
+  els.wakePath.innerHTML = s.wake;
+  renderCpuGrid(s);
+
+  els.futexBox.classList.toggle('hot', s.hot.includes('futex'));
+  els.wakeBox.classList.toggle('hot', s.hot.includes('wake'));
+  els.futexQueue.classList.toggle('hot', s.hot.includes('futex'));
+  els.wakePath.classList.toggle('hot', s.hot.includes('wake'));
+
+  els.title.textContent = s.title;
+  els.explain.innerHTML = s.explain;
+  els.stateVal.textContent = s.state;
+  els.targetVal.textContent = s.target;
+  els.waitVal.textContent = fmtUs(s.wait);
+  els.sliceVal.textContent = '+' + s.slices;
+  els.stateBox.classList.toggle('hot', s.hot.includes('state'));
+  els.targetBox.classList.toggle('hot', s.hot.includes('target'));
+  els.waitBox.classList.toggle('hot', s.hot.includes('wait'));
+  els.sliceBox.classList.toggle('hot', s.hot.includes('slices'));
+
+  els.idx.textContent = current + 1;
+  els.prev.disabled = current === 0;
+  els.next.disabled = current === STEPS.length - 1;
+}
+
+function next(){ if(current < STEPS.length - 1){ current++; render(); } else stopAuto(); }
+function prev(){ if(current > 0){ current--; render(); } }
+function reset(){ stopAuto(); current = 0; render(); }
+function startAuto(){
+  if(timer) return;
+  els.auto.textContent = '暂停';
+  timer = setInterval(next, Number(els.speed.value));
+}
+function stopAuto(){
+  if(timer){ clearInterval(timer); timer = null; }
+  els.auto.textContent = '▶ 自动';
+}
+
+els.next.addEventListener('click', next);
+els.prev.addEventListener('click', prev);
+els.reset.addEventListener('click', reset);
+els.auto.addEventListener('click', ()=> timer ? stopAuto() : startAuto());
+els.speed.addEventListener('input', ()=>{ if(timer){ stopAuto(); startAuto(); } });
+document.addEventListener('keydown', e=>{
+  if(e.key === 'ArrowRight') next();
+  if(e.key === 'ArrowLeft') prev();
+  if(e.key === ' '){ e.preventDefault(); timer ? stopAuto() : startAuto(); }
+});
+
+init();
+render();
+</script>
+</body>
+</html>
