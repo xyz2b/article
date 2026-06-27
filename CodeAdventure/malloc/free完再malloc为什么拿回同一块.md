@@ -7,7 +7,7 @@
 
 ---
 
-上一篇《[一次 malloc(16)，到底是问谁要的内存](https://github.com/xyz2b/article/blob/main/CodeAdventure/一次malloc到底问谁要内存.md)》我们跟着三行 C 把堆挖到了底：`malloc` 先翻 libc 自己的池子、池子空了才向内核批发、内核给的还是张"空头支票"，直到第一次写才配上物理页。结尾留了个钩子——`free` 之后那块地并不会消失，"地还在，只是主人随时会换"，并说这就是 use-after-free 危险的物理根源。这一篇就来兑现：**主人到底怎么换、为什么换得那么有规律**，顺带把 use-after-free 为什么是个能被武器化的重磅漏洞讲透。
+上一篇《[一次 malloc(16)，到底是问谁要的内存](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/一次malloc到底问谁要内存.md)》我们跟着三行 C 把堆挖到了底：`malloc` 先翻 libc 自己的池子、池子空了才向内核批发、内核给的还是张"空头支票"，直到第一次写才配上物理页。结尾留了个钩子——`free` 之后那块地并不会消失，"地还在，只是主人随时会换"，并说这就是 use-after-free 危险的物理根源。这一篇就来兑现：**主人到底怎么换、为什么换得那么有规律**，顺带把 use-after-free 为什么是个能被武器化的重磅漏洞讲透。
 
 入口是一个谁都能复现、看着像巧合的现象：
 
@@ -137,7 +137,7 @@ free 后 malloc(24) = 0x4062b0  (同一块? 是)
 
 - **tcache**：每个线程私有的一层缓存（glibc 2.26 引入）。共 **64 个桶**，覆盖 chunk 32 到约 1040 字节（即请求 ≲1032 字节的小块都归它管，上面表里 `malloc(1032)` chunk=1040 正好是末档）。每桶一条**单向链表**，默认每桶最多囤 **7** 块。`malloc` 小块时第一个就翻它——因为是线程私有，**全程不用加锁**，最快。
 - **fastbin**：tcache 那一桶满了（攒够 7 块）之后，多出来的同档空闲块落到这里。同样按 chunk 分桶的单向链表，但有两点和 tcache 不同：
-    - **不是线程私有的，所以要上锁。** tcache 每个线程一份、互不相干，读写不用加锁；fastbin 则可能被多个线程共用，每次操作得先抢一把锁。这就是它比 tcache 慢、排在 tcache 后面的原因。（"谁和谁共用、那把锁到底锁的是什么"，牵出的是 glibc 的 **[arena（分配区）](https://github.com/xyz2b/article/blob/main/CodeAdventure/多线程malloc为什么会变慢——arena到bins全景.md)** 机制——本篇用不到，留到[下一篇](https://github.com/xyz2b/article/blob/main/CodeAdventure/多线程malloc为什么会变慢——arena到bins全景.md)专门讲。）
+    - **不是线程私有的，所以要上锁。** tcache 每个线程一份、互不相干，读写不用加锁；fastbin 则可能被多个线程共用，每次操作得先抢一把锁。这就是它比 tcache 慢、排在 tcache 后面的原因。（"谁和谁共用、那把锁到底锁的是什么"，牵出的是 glibc 的 **[arena（分配区）](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/多线程malloc为什么会变慢——arena到bins全景.md)** 机制——本篇用不到，留到[下一篇](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/多线程malloc为什么会变慢——arena到bins全景.md)专门讲。）
     - **只盖最小的那几档。** 默认 `global_max_fast = 128` 字节，也就是只接收 chunk ≤ 128 的块——**chunk 32 / 48 / 64 / 80 / 96 / 112 / 128 共 7 档**，对应请求约 1~120 字节。实测请求 120（chunk 128）溢出后进 fastbin，请求 121（chunk 144）就不进了，转去 unsorted/smallbin。比起 tcache 那 64 个桶覆盖到 chunk 1040，fastbin 的覆盖面窄得多。
 
 于是 `malloc(16)` 根本不用满世界找：算出它要 chunk 32 → 定位到 0 号桶 → 拿链表头第一个，O(1) 命中。
@@ -337,4 +337,4 @@ printf("%d\n", p[0]); // 你以为读自己的，其实读到的是 "hell"
 
 ---
 
-> 这是"一条代码的冒险之旅"系列的第三篇。上一篇讲 `malloc` 到底问谁要内存、`free` 又把内存还给了谁：《[一次 malloc(16)，到底是问谁要的内存](https://github.com/xyz2b/article/blob/main/CodeAdventure/一次malloc到底问谁要内存.md)》。下一篇讲多线程 `malloc` 为什么会变慢、glibc 的 arena 与五类 bin 全景：《[多线程 malloc 为什么会变慢——glibc 的 arena 到 bins 全景](https://github.com/xyz2b/article/blob/main/CodeAdventure/多线程malloc为什么会变慢——arena到bins全景.md)》。
+> 这是"一条代码的冒险之旅"系列的第三篇。上一篇讲 `malloc` 到底问谁要内存、`free` 又把内存还给了谁：《[一次 malloc(16)，到底是问谁要的内存](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/一次malloc到底问谁要内存.md)》。下一篇讲多线程 `malloc` 为什么会变慢、glibc 的 arena 与五类 bin 全景：《[多线程 malloc 为什么会变慢——glibc 的 arena 到 bins 全景](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/多线程malloc为什么会变慢——arena到bins全景.md)》。

@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>svc / syscall 做了什么 · 从 ring3 到 ring0 的硬件门</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --yellow:#d29922; --red:#da3633; --purple:#bc8cff;
+    --user:#3fb950; --kernel:#bc8cff;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1720px;margin:0 auto;padding:12px 22px 40px}
+  h1.t{font-size:18px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+  .sub code{font-family:var(--mono);color:var(--hot);background:var(--panel2);padding:0 4px;border-radius:4px}
+
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:8px 13px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:6px 12px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-info{color:var(--dim);font-variant-numeric:tabular-nums;min-width:74px;text-align:center;margin-left:auto;font-size:12px}
+  input[type=range]{width:130px;accent-color:var(--accent)}
+  .arch-toggle{display:flex;gap:0;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+  .arch-toggle button{border:none;border-radius:0;padding:6px 13px;font-size:12.5px;font-family:var(--mono)}
+  .arch-toggle button.on{background:var(--accent);color:#0c1016;font-weight:700}
+
+  /* 主网格：流程 | CPU/代码 | 结构(向量表/MSR) */
+  .grid{display:grid;grid-template-columns:236px 1fr 392px;gap:13px;align-items:start}
+  @media(max-width:1320px){.grid{grid-template-columns:1fr}}
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:7px 13px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .panel .bd{padding:11px 12px}
+
+  /* ===== 流程列 ===== */
+  .flow{display:flex;flex-direction:column;gap:0}
+  .stage{position:relative;border:1.5px solid var(--border);border-radius:8px;padding:5px 9px;background:var(--panel2);transition:.25s;opacity:.45}
+  .stage .zone{font-size:8px;text-transform:uppercase;letter-spacing:.3px;font-weight:700;padding:0 5px;border-radius:4px;display:inline-block;margin-bottom:2px}
+  .stage .zone.user{background:rgba(63,185,80,.16);color:var(--user)}
+  .stage .zone.gate{background:rgba(240,136,62,.16);color:var(--hot)}
+  .stage .zone.kernel{background:rgba(188,140,255,.16);color:var(--kernel)}
+  .stage .name{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--text);line-height:1.3}
+  .stage .desc{font-size:9.5px;color:var(--dim);margin-top:1px;line-height:1.3}
+  .stage.active{opacity:1;border-color:var(--accent);box-shadow:0 0 0 2px rgba(88,166,255,.35)}
+  .stage.active.gatez{border-color:var(--hot);box-shadow:0 0 0 2px rgba(240,136,62,.4)}
+  .stage.active.kernelz{border-color:var(--kernel);box-shadow:0 0 0 2px rgba(188,140,255,.4)}
+  .stage.done{opacity:.8;border-color:#2d3b30}
+  .stage.active .name{color:#fff}
+  .arrow{height:13px;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:11px}
+  .arrow.on{color:var(--hot)}
+  .boundary{margin:3px 0;border-top:1px dashed var(--red);position:relative;height:1px}
+  .boundary span{position:absolute;left:50%;top:-7px;transform:translateX(-50%);background:var(--panel);padding:0 8px;font-size:8.5px;color:var(--red);white-space:nowrap;font-weight:600}
+
+  /* ===== 特权级横幅 ===== */
+  .privbar{display:flex;align-items:stretch;gap:0;border-radius:10px;overflow:hidden;border:1px solid var(--border);margin-bottom:11px;font-family:var(--mono)}
+  .privbar .half{flex:1;padding:9px 12px;transition:.3s;position:relative}
+  .privbar .half .lvl{font-size:16px;font-weight:700}
+  .privbar .half .tag{font-size:10px;opacity:.85}
+  .privbar .u{background:rgba(63,185,80,.08);color:var(--faint)}
+  .privbar .k{background:rgba(188,140,255,.08);color:var(--faint)}
+  .privbar .u.on{background:rgba(63,185,80,.22);color:var(--user);box-shadow:inset 0 0 0 2px var(--user)}
+  .privbar .k.on{background:rgba(188,140,255,.22);color:var(--kernel);box-shadow:inset 0 0 0 2px var(--kernel)}
+  .privbar .mid{flex:0 0 auto;display:flex;align-items:center;padding:0 10px;color:var(--faint);font-size:18px;background:var(--panel2)}
+  .privbar .mid.on{color:var(--hot)}
+
+  /* ===== 寄存器面板 ===== */
+  .regs{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .reg{background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:5px 9px;transition:.25s}
+  .reg .rn{font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:700;display:flex;justify-content:space-between;align-items:baseline}
+  .reg .rn .rd{font-size:9px;color:var(--faint);font-weight:400}
+  .reg .rv{font-family:var(--mono);font-size:12.5px;color:#fff;margin-top:2px;min-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .reg.changed{border-color:var(--change);box-shadow:0 0 0 1px var(--change);background:rgba(187,128,9,.14)}
+  .reg .rv.empty{color:var(--faint)}
+  .reg.sys .rn{color:var(--kernel)}
+  .reg.priv .rn{color:var(--hot)}
+  .reg.warn{border-color:var(--red);box-shadow:0 0 0 1px rgba(218,54,51,.5);background:rgba(218,54,51,.1)}
+  .reg.warn .rv{color:#ff9b94}
+  /* 本步未变化的寄存器压暗，让变化的那个跳出来 */
+  .reg.idle{opacity:.34}
+  .reg.changed{opacity:1}
+
+  /* ===== 本步焦点条 ===== */
+  .focus-bar{display:flex;align-items:center;gap:13px;flex-wrap:wrap;
+    background:linear-gradient(90deg,rgba(240,136,62,.13),rgba(20,26,34,.4) 60%);
+    border:1px solid var(--border);border-left:4px solid var(--hot);border-radius:10px;
+    padding:8px 15px;margin-bottom:12px;min-height:48px;transition:.25s}
+  .focus-bar.user{border-left-color:var(--user);background:linear-gradient(90deg,rgba(63,185,80,.12),rgba(20,26,34,.4) 60%)}
+  .focus-bar.kernel{border-left-color:var(--kernel);background:linear-gradient(90deg,rgba(188,140,255,.12),rgba(20,26,34,.4) 60%)}
+  .focus-bar .flabel{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--hot);white-space:nowrap;flex:0 0 auto;display:flex;flex-direction:column;gap:1px}
+  .focus-bar.user .flabel{color:var(--user)}
+  .focus-bar.kernel .flabel{color:var(--kernel)}
+  .focus-bar .flabel .ftag{font-size:9px;color:var(--faint);font-weight:600;letter-spacing:.4px}
+  .focus-bar .fchips{display:flex;gap:9px;flex-wrap:wrap;align-items:center;flex:1 1 auto}
+  .fchip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12.5px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:4px 11px}
+  .fchip .fk{color:var(--accent);font-weight:700}
+  .fchip .fo{color:var(--faint);text-decoration:line-through;font-size:11px}
+  .fchip .far{color:var(--hot);font-weight:700;font-size:14px}
+  .fchip .fn2{color:#fff;font-weight:700}
+  .fchip.warn{border-color:var(--red);background:rgba(218,54,51,.13)}
+  .fchip.warn .fk{color:#ff9b94}
+  .fchip.warn .fn2{color:#ff9b94}
+  .focus-bar .fnote{font-size:12px;color:var(--dim);font-style:italic}
+
+  /* 代码 */
+  .code-display{background:#05080c;border:1px solid var(--border);border-radius:8px;padding:8px 11px;margin-top:11px}
+  .code-display pre{margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--text);white-space:pre}
+  .code-line{display:block;padding:1px 7px;border-radius:4px;transition:.2s}
+  .code-line.active{background:rgba(240,136,62,.16);box-shadow:inset 2px 0 0 var(--hot)}
+  .code-line .kw{color:#ff7b72}.code-line .reg2{color:#ffa657}.code-line .imm{color:#a5d6ff}
+  .code-line .op{color:#79c0ff}.code-line .cmt{color:var(--faint)}
+
+  /* ===== 结构列：向量表 / MSR ===== */
+  .struct-meta{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:8px;line-height:1.5}
+  .struct-meta b{color:var(--hot)}
+  /* 向量表 */
+  .vgroup{border:1px solid var(--border);border-radius:7px;margin-bottom:6px;overflow:hidden;transition:.25s}
+  .vgroup .vghd{display:flex;align-items:center;gap:7px;padding:3px 9px;font-family:var(--mono);font-size:10px;background:var(--panel2);border-bottom:1px solid var(--border)}
+  .vgroup .vghd .voff{color:var(--accent);font-weight:700}
+  .vgroup .vghd .vlbl{color:var(--dim)}
+  .vgroup.hot{border-color:var(--hot);box-shadow:0 0 0 1px rgba(240,136,62,.4)}
+  .vgroup.dim{opacity:.4}
+  .vrow{display:grid;grid-template-columns:54px 1fr;gap:6px;align-items:center;padding:3px 9px;font-family:var(--mono);font-size:10.5px;border-top:1px solid rgba(40,48,57,.5)}
+  .vrow:first-child{border-top:none}
+  .vrow .vo{color:var(--faint);font-size:9.5px}
+  .vrow .vt{color:var(--dim)}
+  .vrow.hit{background:rgba(240,136,62,.18);box-shadow:inset 2px 0 0 var(--hot)}
+  .vrow.hit .vo{color:var(--hot);font-weight:700}
+  .vrow.hit .vt{color:#fff;font-weight:700}
+
+  /* MSR 行 */
+  .msr{background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:6px 10px;margin-bottom:7px;transition:.25s;font-family:var(--mono)}
+  .msr .mh{display:flex;justify-content:space-between;align-items:baseline}
+  .msr .mname{font-size:11.5px;color:var(--kernel);font-weight:700}
+  .msr .mid{font-size:9.5px;color:var(--faint)}
+  .msr .mval{font-size:11px;color:#fff;margin-top:2px}
+  .msr .mdesc{font-size:9.5px;color:var(--dim);margin-top:1px;font-family:-apple-system,system-ui,sans-serif}
+  .msr.hit{border-color:var(--hot);box-shadow:0 0 0 1px rgba(240,136,62,.45);background:rgba(240,136,62,.1)}
+  .msr.hit .mname{color:var(--hot)}
+
+  /* 入口目标盒 */
+  .entry-box{margin-top:9px;border:1.5px dashed var(--kernel);border-radius:8px;padding:8px 11px;background:rgba(188,140,255,.06);transition:.25s}
+  .entry-box.hit{border-style:solid;background:rgba(188,140,255,.16);box-shadow:0 0 0 1px var(--kernel)}
+  .entry-box .eh{font-family:var(--mono);font-size:11px;color:var(--kernel);font-weight:700}
+  .entry-box .ea{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:2px}
+
+  /* 入口 → ksys_write 调用链 */
+  .callchain{margin-top:9px;border:1px solid var(--border);border-radius:8px;padding:8px 11px;background:rgba(10,14,20,.4);transition:.25s}
+  .callchain.hit{border-color:var(--kernel);box-shadow:0 0 0 1px rgba(188,140,255,.35);background:rgba(188,140,255,.07)}
+  .callchain .cchd{font-size:9.5px;color:var(--faint);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px}
+  .callchain .cchd b{color:var(--kernel)}
+  .ccstep{display:flex;align-items:baseline;gap:7px;font-family:var(--mono);font-size:10.5px;padding:1px 0;line-height:1.5}
+  .ccstep .ccfn{color:var(--text)}
+  .ccstep .ccfn.last{color:var(--hot);font-weight:700}
+  .ccstep .ccnote{color:var(--faint);font-size:9px;font-family:-apple-system,system-ui,sans-serif}
+  .ccarrow{color:var(--faint);font-size:10px;padding-left:4px}
+
+  /* 墙 / 实验脚注 */
+  .wall{margin-top:13px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .wall .wcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:9px 12px}
+  .wall .wcard .wt{font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+  .wall .wcard .wd{font-size:11px;color:var(--dim);line-height:1.5}
+  .wall .wcard code{font-family:var(--mono);background:var(--panel2);padding:0 4px;border-radius:4px;color:#79c0ff;font-size:10.5px}
+  .sigtag{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 7px;border-radius:5px;background:rgba(218,54,51,.16);color:#ff9b94;border:1px solid rgba(218,54,51,.5)}
+  @media(max-width:680px){.wall{grid-template-columns:1fr}}
+
+  /* 旁白 */
+  .narr{margin-top:13px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 15px;display:flex;gap:13px;align-items:flex-start}
+  .narr .badge{flex:0 0 auto;font-family:var(--mono);font-size:12px;font-weight:700;padding:4px 11px;border-radius:6px;white-space:nowrap}
+  .narr .badge.user{background:rgba(63,185,80,.16);color:var(--user);border:1px solid var(--user)}
+  .narr .badge.gate{background:rgba(240,136,62,.18);color:var(--hot);border:1px solid var(--hot)}
+  .narr .badge.kernel{background:rgba(188,140,255,.16);color:var(--kernel);border:1px solid var(--kernel)}
+  .narr .text{font-size:13px;line-height:1.6}
+  .narr .text code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
+  .narr .text b{color:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">svc / syscall 做了什么 · 从 ring 3 到 ring 0 的那道硬件门</h1>
+  <p class="sub">盯住 <code>write(1,"hi",3)</code> 里那条 <code>svc #0</code> / <code>syscall</code>：执行的那一瞬，CPU 硬件在一个<b style="color:var(--hot)">不可打断</b>的步骤里同时切特权级、存返回地址与状态、关中断、换栈、跳进内核写死的可信入口。一步一步看寄存器与向量表/MSR 怎么变。</p>
+
+  <div class="controls">
+    <div class="arch-toggle">
+      <button id="arm" class="on">ARM64 · svc</button>
+      <button id="x86">x86-64 · syscall</button>
+    </div>
+    <button id="reset">⏮ 重置</button>
+    <button id="prev">← 上一步</button>
+    <button id="next" class="primary">下一步 →</button>
+    <button id="auto">▶ 自动</button>
+    <label style="font-size:11px;color:var(--dim)">速度<input type="range" id="speed" min="350" max="2200" value="1200"></label>
+    <span class="step-info" id="counter">0 / 0</span>
+  </div>
+
+  <!-- 本步焦点：这一步到底改了什么 -->
+  <div class="focus-bar" id="focus-bar"></div>
+
+  <div class="grid">
+    <!-- 流程列 -->
+    <div class="panel">
+      <div class="ttl">执行流 · <span id="flow-arch" style="color:var(--hot);text-transform:none;letter-spacing:0;font-family:var(--mono)">svc</span> 跨越特权边界</div>
+      <div class="bd"><div class="flow" id="flow"></div></div>
+    </div>
+
+    <!-- CPU 列 -->
+    <div class="panel">
+      <div class="ttl">CPU · 当前特权级与寄存器</div>
+      <div class="bd">
+        <div class="privbar" id="privbar"></div>
+        <div class="regs" id="regs"></div>
+        <div class="code-display"><pre id="code"></pre></div>
+      </div>
+    </div>
+
+    <!-- 结构列 -->
+    <div class="panel">
+      <div class="ttl" id="struct-ttl">内核入口 · 向量表</div>
+      <div class="bd" id="struct"></div>
+    </div>
+  </div>
+
+  <div class="narr">
+    <span class="badge user" id="badge">就绪</span>
+    <div class="text" id="narr-text">选 <b>ARM64</b> 或 <b>x86-64</b>，点「下一步」。你会看到 <code>svc</code>/<code>syscall</code> 不是一次普通跳转，而是硬件原子地做完七八件事，把 CPU 安全地送到内核写死的那一个入口。</div>
+  </div>
+
+  <!-- 两堵墙：为什么不能 jmp -->
+  <div class="wall">
+    <div class="wcard">
+      <div class="wt">🧱 墙一：直接 call 内核地址 <span class="sigtag" id="wall1-sig">SIGSEGV</span></div>
+      <div class="wd" id="wall1">用户态（EL0/ring3）去取内核高半区地址上的指令，MMU 翻译时一看页表项的特权位（<code>AP[1]</code>）不许 EL0 访问，立刻抛异常。<code>jmp</code> 这条路从页表层面就被堵死。</div>
+    </div>
+    <div class="wcard">
+      <div class="wt">🧱 墙二：读内核入口寄存器 <span class="sigtag" id="wall2-sig">SIGILL</span></div>
+      <div class="wd" id="wall2"><code>mrs x0, vbar_el1</code> 在 EL0 执行直接是非法指令——用户态连"门开在哪"都看不到。既进不去、又不知道门在哪，只能用 <code>svc</code> 敲那道受控的门。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+
+/* ============ ARM64 数据 ============ */
+const ARM = {
+  flowArch:'svc',
+  structTitle:'内核入口 · 异常向量表 (VBAR_EL1)',
+  regDefs:[
+    {k:'el',  cls:'priv', desc:'异常级别'},
+    {k:'pc',  cls:'',     desc:'下一条指令'},
+    {k:'sp',  cls:'',     desc:'栈指针'},
+    {k:'x8',  cls:'',     desc:'系统调用号'},
+    {k:'x0',  cls:'',     desc:'arg1 / 返回值'},
+    {k:'daif',cls:'priv', desc:'中断屏蔽'},
+    {k:'elr', cls:'sys',  desc:'ELR_EL1 返回址'},
+    {k:'spsr',cls:'sys',  desc:'SPSR_EL1 存状态'},
+    {k:'esr', cls:'sys',  desc:'ESR_EL1 异常因'},
+    {k:'vbar',cls:'sys',  desc:'VBAR_EL1 向量基址'},
+  ],
+  code:[
+    {t:'<span class="cmt">; libc 的 write() / 手写 22_step_svc</span>',i:-1},
+    {t:'<span class="op">mov</span>  <span class="reg2">x8</span>, <span class="imm">#0x40</span>     <span class="cmt">; x8 = 64，write 的号</span>',i:0},
+    {t:'<span class="op">svc</span>  <span class="imm">#0x0</span>          <span class="cmt">; ← 跨过特权边界的那条</span>',i:1},
+    {t:'<span class="op">mov</span>  <span class="reg2">w0</span>, <span class="imm">#0x0</span>      <span class="cmt">; svc 返回后落到这（pc+4）</span>',i:12},
+  ],
+  R0:{el:'EL0',pc:'0x400658',sp:'用户栈 …f9a0',x8:'64',x0:'1',daif:'可中断',elr:'—',spsr:'—',esr:'—',vbar:'…80010800'},
+};
+
+/* ARM 步骤：每步给出该步结束后的完整寄存器值 + 变化项 */
+ARM.steps = (function(){
+  const base = ARM.R0;
+  const m=(o)=>Object.assign({},base,o);
+  return [
+    {flow:'u0',zone:'user',el:'EL0',badge:'用户态 · 就绪',codeI:0,changed:[],
+     regs:m({pc:'0x400658',x8:'64',x0:'1'}),vec:false,
+     narr:'用户程序把约定好的寄存器摆好：<code>x8=64</code>（write 的系统调用号）、<code>x0=1</code>（fd）、<code>x1=buf</code>、<code>x2=3</code>。此刻还在 <b style="color:var(--user)">EL0</b>，碰不到内核任何一个字节。下一条就是 <code>svc</code>。'},
+
+    {flow:'u0',zone:'user',el:'EL0',badge:'svc · 执行',codeI:1,changed:['pc'],
+     regs:m({pc:'0x400658',x8:'64',x0:'1'}),vec:false,
+     narr:'<code>svc #0</code> 取指、开始执行。注意立即数 <code>#0</code> 内核根本不看——号是从 <code>x8</code> 读的。从这条指令起，CPU 硬件接管，<b style="color:var(--hot)">原子地</b>完成下面 ⑦ 件事，中途不可打断。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'① 提权 EL0→EL1',codeI:1,changed:['el'],
+     regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1'}),vec:false,
+     narr:'<b>① 提权</b>：当前异常级别从 <b style="color:var(--user)">EL0</b> 跳到 <b style="color:var(--kernel)">EL1</b>。这是核心目的——从这一刻起 CPU 能访问内核页、能执行特权指令了。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'② 存返回地址',codeI:1,changed:['elr'],
+     regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',elr:'0x40065c'}),vec:false,
+     narr:'<b>② 存返回地址</b>：<code>ELR_EL1 ← svc 的下一条指令地址</code>（0x40065c）。进了内核这寄存器会被覆盖，得先冻起来，将来 <code>eret</code> 才知道回哪。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'③ 存处理器状态',codeI:1,changed:['spsr'],
+     regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照'}),vec:false,
+     narr:'<b>③ 存状态</b>：<code>SPSR_EL1 ← 当前 PSTATE</code>（含 EL、各标志位）。和 ② 配对——一个记"回哪"，一个记"恢复成什么样"。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'④ 关中断 (DAIF)',codeI:1,changed:['daif'],
+     regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照',daif:'已屏蔽 ●'}),vec:false,
+     narr:'<b>④ 关中断</b>：<code>PSTATE.DAIF</code> 置位，屏蔽 IRQ/FIQ。刚进内核、栈还没搭稳的当口不能被打断，等内核站稳了再开。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'⑤ 记录原因 ESR',codeI:1,changed:['esr'],
+     regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照',daif:'已屏蔽 ●',esr:'EC=0x15'}),vec:false,
+     narr:'<b>⑤ 记录原因</b>：<code>ESR_EL1.EC ← 0x15</code>，明写"这是一条 AArch64 的 SVC"。内核入口正是读它来区分：这次进来是系统调用、缺页、还是别的异常。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'⑥ 换内核栈',codeI:1,changed:['sp'],
+     regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),vec:false,
+     narr:'<b>⑥ 换栈</b>（重点）：<code>SP</code> 自动从用户栈 <code>SP_EL0</code> 切到内核栈 <code>SP_EL1</code>。注意是<b>硬件自动切</b>，汇编不用管——因为 svc 走的就是异常机制。'},
+
+    {flow:'gate',zone:'gate',el:'EL1',badge:'⑦ 跳转 PC',codeI:1,changed:['pc'],
+     regs:m({el:'EL1',pc:'VBAR_EL1+0x400',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),vec:true,
+     narr:'<b>⑦ 跳转</b>：<code>PC ← VBAR_EL1 + 0x400</code>。落点不是用户挑的——是内核启动时写死在 <code>VBAR_EL1</code> 里的向量表基址，加上"64 位用户态来的同步异常"这个架构固定偏移 0x400。'},
+
+    {flow:'vec',zone:'kernel',el:'EL1',badge:'落地 · 向量表 +0x400',codeI:1,changed:['pc'],
+     regs:m({el:'EL1',pc:'el0t_64_sync',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),vec:true,
+     narr:'CPU 落在 <code>vectors + 0x400</code> 这一格，里头一条 <code>b</code> 跳到真正的处理函数 <code>el0t_64_sync</code>。<b>这就和第三篇接上了</b>——门后那段汇编怎么存现场、建 <code>pt_regs</code>，是第三篇的事。'},
+
+    {flow:'kernel',zone:'kernel',el:'EL1',badge:'内核 · 干活',codeI:1,changed:[],
+     regs:m({el:'EL1',pc:'ksys_write…',x8:'64',x0:'1',elr:'0x40065c',spsr:'PSTATE快照',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),vec:true,
+     narr:'内核保存现场、开中断、查 <code>sys_call_table</code> 路由到 <code>ksys_write</code>，把 "hi\\n" 真写到 stdout。干完把返回值（写出的字节数 3）放进 <code>x0</code>。'},
+
+    {flow:'eret',zone:'kernel',el:'EL0',badge:'eret · 返回',codeI:12,changed:['el','pc','sp','daif','x0'],
+     regs:m({el:'EL0',pc:'0x40065c',x8:'64',x0:'3',daif:'可中断',sp:'用户栈 …f9a0',elr:'(已用)',spsr:'(已恢复)',esr:'—'}),vec:false,
+     narr:'<code>eret</code> 是进入动作的镜像：从 <code>ELR_EL1</code> 取回返回地址、从 <code>SPSR_EL1</code> 恢复状态、特权级切回 <b style="color:var(--user)">EL0</b>、<code>SP</code> 换回用户栈。少存一半就回不去。'},
+
+    {flow:'u1',zone:'user',el:'EL0',badge:'用户态 · 继续',codeI:12,changed:['x0'],
+     regs:m({el:'EL0',pc:'0x40065c',x8:'64',x0:'3',daif:'可中断',sp:'用户栈 …f9a0',elr:'—',spsr:'—',esr:'—'}),vec:false,
+     narr:'回到用户态。从这一侧看：<code>pc</code> 只 <b>+4 字节</b>、<code>sp</code> 纹丝不动、<code>x0</code> 从 1 变成 3——和一次普通函数调用几乎没区别。中间那趟 EL0→EL1→向量表→内核→eret 的旅程，被硬件包得严严实实，用户态<b>一点都感觉不到</b>。'},
+  ];
+})();
+
+ARM.flowStages = [
+  {id:'u0',  zone:'user',  name:'EL0 用户态',     desc:'摆好 x8/x0，执行 svc'},
+  {id:'gate',zone:'gate',  name:'硬件原子动作 ①–⑦',desc:'提权·存现场·关中断·换栈·跳转'},
+  {id:'vec', zone:'kernel',name:'向量表 +0x400',   desc:'→ el0t_64_sync'},
+  {id:'kernel',zone:'kernel',name:'EL1 内核态',    desc:'查表路由 → ksys_write 干活'},
+  {id:'eret',zone:'kernel',name:'eret 返回',       desc:'恢复 PC/状态/栈，切回 EL0'},
+  {id:'u1',  zone:'user',  name:'EL0 用户态 续',   desc:'x0=返回值，pc=svc+4'},
+];
+
+/* 向量表渲染 */
+ARM.renderStruct = function(s){
+  const groups=[
+    {off:'0x000',lbl:'Current EL · SP0',dim:true},
+    {off:'0x200',lbl:'Current EL · SPx',dim:true},
+    {off:'0x400',lbl:'Lower EL · AArch64',hot:s.vec},
+    {off:'0x600',lbl:'Lower EL · AArch32',dim:true},
+  ];
+  const entries=[
+    {o:'+0x000',t:'Synchronous',hit:true},
+    {o:'+0x080',t:'IRQ'},
+    {o:'+0x100',t:'FIQ'},
+    {o:'+0x180',t:'SError'},
+  ];
+  let html=`<div class="struct-meta"><b>VBAR_EL1</b> = 0xffff800080010800 → 符号 <b>vectors</b>。<br>
+    svc 从 64 位用户态来 = "Lower EL·AArch64" 组(0x400) × "同步异常"格(+0x000) → 落点 <b>VBAR_EL1 + 0x400</b>。</div>`;
+  groups.forEach(g=>{
+    const cls=(g.hot?' hot':'')+(g.dim&&!g.hot?' dim':'');
+    html+=`<div class="vgroup${cls}"><div class="vghd"><span class="voff">${g.off}</span><span class="vlbl">${g.lbl}</span></div>`;
+    if(g.hot){
+      entries.forEach(e=>{
+        html+=`<div class="vrow${e.hit?' hit':''}"><span class="vo">${e.o}</span><span class="vt">${e.t}${e.hit?' ◄ svc 落这':''}</span></div>`;
+      });
+    }
+    html+=`</div>`;
+  });
+  html+=`<div class="entry-box${s.vec?' hit':''}"><div class="eh">el0t_64_sync</div>
+    <div class="ea">0xffff800080011340 · t · 第三篇接手这段汇编</div></div>`;
+  html+=callchainHTML(ARM.chain, s.flow==='kernel');
+  return html;
+};
+ARM.chain=[
+  {fn:'el0t_64_sync',     note:'向量表落点，存现场建 pt_regs'},
+  {fn:'el0_svc',          note:'读 ESR_EL1，确认是 SVC'},
+  {fn:'invoke_syscall',   note:'拿 x8(=64) 查 sys_call_table'},
+  {fn:'__arm64_sys_write',note:'表项里的包装器，解参数'},
+  {fn:'ksys_write',       note:'真正干活',last:true},
+];
+
+/* ============ x86-64 数据 ============ */
+const X86 = {
+  flowArch:'syscall',
+  structTitle:'内核入口 · 三个 MSR',
+  regDefs:[
+    {k:'cpl',  cls:'priv',desc:'当前特权级'},
+    {k:'rip',  cls:'',    desc:'下一条指令'},
+    {k:'rsp',  cls:'',    desc:'栈指针'},
+    {k:'rax',  cls:'',    desc:'系统调用号'},
+    {k:'rdi',  cls:'',    desc:'arg1 (fd)'},
+    {k:'rflags',cls:'priv',desc:'IF 中断使能'},
+    {k:'rcx',  cls:'sys', desc:'← 存 RIP'},
+    {k:'r11',  cls:'sys', desc:'← 存 RFLAGS'},
+    {k:'cs',   cls:'sys', desc:'代码段(定 CPL)'},
+    {k:'lstar',cls:'sys', desc:'IA32_LSTAR 入口'},
+  ],
+  code:[
+    {t:'<span class="cmt">; libc 的 write() (x86-64)</span>',i:-1},
+    {t:'<span class="op">mov</span>    <span class="reg2">eax</span>, <span class="imm">1</span>      <span class="cmt">; rax = 1，write 的号</span>',i:0},
+    {t:'<span class="op">syscall</span>             <span class="cmt">; ← 0F 05，跨过特权边界</span>',i:1},
+    {t:'<span class="op">cmp</span>    <span class="reg2">rax</span>, <span class="imm">-4095</span> <span class="cmt">; syscall 返回后落这</span>',i:12},
+  ],
+  R0:{cpl:'3 (ring3)',rip:'0x401136',rsp:'用户栈 …f9a0',rax:'1',rdi:'1',rflags:'IF=1 可中断',rcx:'—',r11:'—',cs:'__USER_CS',lstar:'…81e00000'},
+};
+
+X86.steps = (function(){
+  const base=X86.R0;
+  const m=(o)=>Object.assign({},base,o);
+  return [
+    {flow:'u0',zone:'user',el:'ring3',badge:'用户态 · 就绪',codeI:0,changed:[],
+     regs:m({rip:'0x401136',rax:'1',rdi:'1'}),lstarHit:false,starHit:false,fmaskHit:false,entryHit:false,rspWarn:false,
+     narr:'用户程序摆好寄存器：<code>rax=1</code>（write 号）、<code>rdi=1</code>（fd）、<code>rsi=buf</code>、<code>rdx=5</code>。此刻 <b style="color:var(--user)">CPL=3</b>（ring3）。下一条是 <code>syscall</code>。'},
+
+    {flow:'u0',zone:'user',el:'ring3',badge:'syscall · 执行',codeI:1,changed:[],
+     regs:m({rip:'0x401136',rax:'1',rdi:'1'}),
+     narr:'<code>syscall</code>（机器码 <code>0F 05</code>）开始执行。它是 AMD64 为了"快"造的指令——能少做一件就少做一件，硬件只保证最不能省的几样。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'① 提权 CPL 3→0',codeI:1,changed:['cpl'],
+     regs:m({cpl:'0 (ring0)',rip:'0x401136',rax:'1',rdi:'1'}),
+     narr:'<b>① 提权</b>：<code>CPL 3 → 0</code>，进 ring0。和 ARM 的 EL0→EL1 是同一件事。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'② 存返回地址 RCX',codeI:1,changed:['rcx'],
+     regs:m({cpl:'0 (ring0)',rip:'0x401136',rax:'1',rdi:'1',rcx:'0x40113b'}),
+     narr:'<b>② 存返回地址</b>：<code>RCX ← RIP</code>（下一条）。ARM 用专用寄存器 ELR_EL1，x86 图省事直接塞进<b>通用</b>寄存器 RCX——代价是 RCX 原值被冲掉，ABI 特意规定它会被破坏。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'③ 存状态 R11',codeI:1,changed:['r11'],
+     regs:m({cpl:'0 (ring0)',rip:'0x401136',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照'}),
+     narr:'<b>③ 存状态</b>：<code>R11 ← RFLAGS</code>。同样借通用寄存器，R11 也因此被列为 syscall 会破坏。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'④ 关中断 (清 IF)',codeI:1,changed:['rflags'],fmaskHit:true,
+     regs:m({cpl:'0 (ring0)',rip:'0x401136',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照',rflags:'IF=0 已屏蔽'}),
+     narr:'<b>④ 关中断</b>：<code>RFLAGS ← RFLAGS & ~IA32_FMASK</code>，清掉 IF 等位。要清哪些位，由 <code>IA32_FMASK</code> 这个 MSR 决定。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'⑤ 换段 (定特权)',codeI:1,changed:['cs'],starHit:true,
+     regs:m({cpl:'0 (ring0)',rip:'0x401136',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照',rflags:'IF=0 已屏蔽',cs:'__KERNEL_CS'}),
+     narr:'<b>⑤ 换段</b>：<code>CS、SS ← IA32_STAR 里的内核段选择子</code>。64 位平坦模型下换的不是地址窗口，而是<b>特权级</b>——CPL 就等于 CS 低 2 位。妙在 syscall 不查 GDT，属性直接由微码写死常量灌进隐藏缓存。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'⑥ 跳转 RIP',codeI:1,changed:['rip'],lstarHit:true,
+     regs:m({cpl:'0 (ring0)',rip:'IA32_LSTAR',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照',rflags:'IF=0 已屏蔽',cs:'__KERNEL_CS'}),
+     narr:'<b>⑥ 跳转</b>：<code>RIP ← IA32_LSTAR</code>。这个 MSR 内核启动时填成 <code>entry_SYSCALL_64</code> 的地址，用户态读不到、改不了。落点完全由它说了算。'},
+
+    {flow:'gate',zone:'gate',el:'ring0',badge:'✗ 不换栈！',codeI:1,changed:['rsp'],lstarHit:true,rspWarn:true,
+     regs:m({cpl:'0 (ring0)',rip:'IA32_LSTAR',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照',rflags:'IF=0 已屏蔽',cs:'__KERNEL_CS',rsp:'⚠ 仍是用户栈!'}),
+     narr:'<b style="color:#ff9b94">关键坑</b>：<code>syscall</code> 根本<b>不碰 RSP</b>！进内核第一脚，栈指针还指着用户栈。（常被误传的"TSS.RSP0 切栈"是给中断/异常门用的，与 syscall 无关。）'},
+
+    {flow:'vec',zone:'kernel',el:'ring0',badge:'entry · 软件换栈',codeI:1,changed:['rsp'],lstarHit:true,entryHit:true,
+     regs:m({cpl:'0 (ring0)',rip:'entry_SYSCALL_64',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照',rflags:'IF=0 已屏蔽',cs:'__KERNEL_CS',rsp:'内核栈(手动)'}),
+     narr:'落在 <code>entry_SYSCALL_64</code>。因为硬件没换栈，这段汇编开头必须<b>软件手动换</b>：先 <code>swapgs</code> 拿 per-CPU 数据，再把内核栈顶 <code>movq</code> 进 <code>rsp</code>。（这正是第三篇的内容。）'},
+
+    {flow:'kernel',zone:'kernel',el:'ring0',badge:'内核 · 干活',codeI:1,changed:[],entryHit:true,
+     regs:m({cpl:'0 (ring0)',rip:'ksys_write…',rax:'1',rdi:'1',rcx:'0x40113b',r11:'RFLAGS快照',rflags:'IF=0 已屏蔽',cs:'__KERNEL_CS',rsp:'内核栈'}),
+     narr:'内核存现场、开中断、查 <code>sys_call_table</code> 路由到 <code>ksys_write</code>，写出数据，把返回值放进 <code>rax</code>。'},
+
+    {flow:'eret',zone:'kernel',el:'ring3',badge:'sysret · 返回',codeI:12,changed:['cpl','rip','rflags','rax'],
+     regs:m({cpl:'3 (ring3)',rip:'0x40113b',rax:'5',rdi:'1',rcx:'(已用)',r11:'(已用)',rflags:'IF=1 可中断',cs:'__USER_CS',rsp:'用户栈 …f9a0'}),
+     narr:'<code>sysret</code>：把当年 syscall 存进 <code>RCX</code>/<code>R11</code> 的 RIP/RFLAGS 装回去，CPL 切回 3。进入和返回是严格配对的镜像动作。'},
+
+    {flow:'u1',zone:'user',el:'ring3',badge:'用户态 · 继续',codeI:12,changed:['rax'],
+     regs:m({cpl:'3 (ring3)',rip:'0x40113b',rax:'5',rdi:'1',rflags:'IF=1 可中断',cs:'__USER_CS',rsp:'用户栈 …f9a0',rcx:'—',r11:'—'}),
+     narr:'回到用户态，<code>rax</code> = 返回值。整趟 ring 之旅对用户态同样隐形——只是 RCX/R11 被 syscall 顺手破坏了，这是 x86 借通用寄存器存现场留下的痕迹。'},
+  ];
+})();
+
+X86.flowStages = [
+  {id:'u0',  zone:'user',  name:'ring3 用户态',    desc:'摆好 rax/rdi，执行 syscall'},
+  {id:'gate',zone:'gate',  name:'硬件原子动作 ①–⑥',desc:'提权·存现场·关中断·换段·跳转 (✗不换栈)'},
+  {id:'vec', zone:'kernel',name:'entry_SYSCALL_64',desc:'内核汇编 swapgs + 手动换栈'},
+  {id:'kernel',zone:'kernel',name:'ring0 内核态',  desc:'查表路由 → ksys_write 干活'},
+  {id:'eret',zone:'kernel',name:'sysret 返回',     desc:'恢复 RIP/RFLAGS，切回 ring3'},
+  {id:'u1',  zone:'user',  name:'ring3 用户态 续',  desc:'rax=返回值'},
+];
+
+X86.renderStruct = function(s){
+  const msrs=[
+    {n:'IA32_LSTAR',id:'0xC0000082',v:'0xffffffff81e00000',d:'syscall 入口 = entry_SYSCALL_64',hit:s.lstarHit},
+    {n:'IA32_STAR', id:'0xC0000081',v:'内核/用户 CS·SS 选择子',d:'换段切 ring0 用哪个段',hit:s.starHit},
+    {n:'IA32_FMASK',id:'0xC0000084',v:'含 IF 等位',d:'进内核要从 RFLAGS 清掉的位',hit:s.fmaskHit},
+  ];
+  let html=`<div class="struct-meta">x86 没有向量表这层，<b>syscall</b> 直接从 MSR 取入口地址，一步到位。<br>
+    <code style="font-family:var(--mono);font-size:10px"># rdmsr 0xc0000082</code> 的值 == kallsyms 里的 <b>entry_SYSCALL_64</b>。</div>`;
+  msrs.forEach(mr=>{
+    html+=`<div class="msr${mr.hit?' hit':''}"><div class="mh"><span class="mname">${mr.n}</span><span class="mid">${mr.id}</span></div>
+      <div class="mval">${mr.v}</div><div class="mdesc">${mr.d}</div></div>`;
+  });
+  html+=`<div class="entry-box${s.entryHit?' hit':''}"><div class="eh">entry_SYSCALL_64</div>
+    <div class="ea">0xffffffff81e00000 · 开头 swapgs + 手动换栈 · 第三篇接手</div></div>`;
+  html+=callchainHTML(X86.chain, s.flow==='kernel');
+  return html;
+};
+X86.chain=[
+  {fn:'entry_SYSCALL_64',  note:'swapgs、手动换栈、建 pt_regs'},
+  {fn:'do_syscall_64',     note:'拿 rax(=1) 查 sys_call_table'},
+  {fn:'__x64_sys_write',   note:'表项里的包装器，解参数'},
+  {fn:'ksys_write',        note:'真正干活',last:true},
+];
+
+/* 入口 → ksys_write 调用链（两架构共用渲染） */
+function callchainHTML(chain, hit){
+  let rows='';
+  chain.forEach((c,i)=>{
+    rows+=`<div class="ccstep"><span class="ccfn${c.last?' last':''}">${c.fn}</span><span class="ccnote">${c.note}</span></div>`;
+    if(i<chain.length-1) rows+=`<div class="ccarrow">↓</div>`;
+  });
+  return `<div class="callchain${hit?' hit':''}">
+    <div class="cchd">入口落地后 · 怎么走到 <b>ksys_write</b>（第三、四篇展开）</div>${rows}</div>`;
+}
+
+/* ============ 渲染引擎 ============ */
+let ARCH='arm', cur=0, timer=null, autoOn=false;
+const D=()=>ARCH==='arm'?ARM:X86;
+
+function privbarHTML(s){
+  const isUser=s.zone==='user';
+  const gateOn=s.zone==='gate';
+  const kernOn=s.zone==='kernel';
+  const uLabel=ARCH==='arm'?'EL0':'ring 3';
+  const kLabel=ARCH==='arm'?'EL1':'ring 0';
+  // user "on" 当处于用户态; kernel "on" 当 gate/kernel
+  const uOn=isUser?' on':'';
+  const kOn=(gateOn||kernOn)?' on':'';
+  return `<div class="half u${uOn}"><div class="lvl">${uLabel}</div><div class="tag">用户态 · 受限</div></div>
+    <div class="mid${gateOn?' on':''}">${gateOn?'⚡':'▶'}</div>
+    <div class="half k${kOn}"><div class="lvl">${kLabel}</div><div class="tag">内核态 · 全权</div></div>`;
+}
+
+function regsHTML(s){
+  const chg=s.changed||[];
+  const anyChg=chg.length>0;
+  return D().regDefs.map(r=>{
+    const v=s.regs[r.k];
+    const isChg=chg.includes(r.k);
+    const warn=r.k==='rsp'&&s.rspWarn;
+    const empty=(v==='—'||v==null)?' empty':'';
+    // 有变化时，把没变的寄存器压暗，让变化的那个跳出来
+    const idle=(anyChg&&!isChg)?' idle':'';
+    return `<div class="reg ${r.cls}${isChg?' changed':''}${warn?' warn':''}${idle}">
+      <div class="rn">${r.k.toUpperCase()}<span class="rd">${r.desc}</span></div>
+      <div class="rv${empty}">${v==null?'—':v}</div></div>`;
+  }).join('');
+}
+
+// 本步焦点条：自动算出"哪个寄存器 旧值 → 新值"
+function focusHTML(s){
+  const data=D();
+  const chg=s.changed||[];
+  const prev=cur>0?data.steps[cur-1].regs:data.R0;
+  const zoneCls=s.zone==='user'?'user':s.zone==='kernel'?'kernel':'';
+  let chips='';
+  if(chg.length){
+    chips=chg.map(k=>{
+      const oldV=prev[k];
+      const newV=s.regs[k];
+      const warn=(k==='rsp'&&s.rspWarn);
+      return `<span class="fchip${warn?' warn':''}">
+        <span class="fk">${k.toUpperCase()}</span>
+        <span class="fo">${oldV==null?'—':oldV}</span>
+        <span class="far">→</span>
+        <span class="fn2">${newV==null?'—':newV}</span></span>`;
+    }).join('');
+  } else {
+    chips=`<span class="fnote">本步无寄存器写入 · 看左侧执行流与右侧结构</span>`;
+  }
+  return `<div class="flabel"><span class="ftag">本步焦点</span>${s.badge}</div>
+    <div class="fchips">${chips}</div>`;
+}
+
+function codeHTML(s){
+  return D().code.map(l=>{
+    const on=(l.i===s.codeI&&l.i>=0)?' active':'';
+    return `<span class="code-line${on}">${l.t}</span>`;
+  }).join('');
+}
+
+function flowHTML(s){
+  const stages=D().flowStages;
+  const order=stages.map(x=>x.id);
+  const curIdx=order.indexOf(s.flow);
+  let html='';
+  stages.forEach((st,i)=>{
+    const active=st.id===s.flow;
+    const done=i<curIdx;
+    const zc=st.zone==='gate'?'gatez':st.zone==='kernel'?'kernelz':'';
+    html+=`<div class="stage ${active?'active '+zc:''}${done?' done':''}">
+      <span class="zone ${st.zone}">${st.zone==='user'?'用户态':st.zone==='gate'?'硬件门':'内核态'}</span>
+      <div class="name">${st.name}</div><div class="desc">${st.desc}</div></div>`;
+    // 在硬件门之前画特权边界
+    if(st.id==='u0'){
+      const on=(s.zone==='gate')?' on':'';
+      html+=`<div class="boundary"><span>特权边界 · 只能用 ${D().flowArch} 敲</span></div>`;
+    } else if(i<stages.length-1){
+      const on=(curIdx>i)?' on':'';
+      html+=`<div class="arrow${on}">▼</div>`;
+    }
+  });
+  return html;
+}
+
+function render(){
+  const data=D();
+  const s=data.steps[cur];
+  $('flow-arch').textContent=data.flowArch;
+  $('struct-ttl').textContent=data.structTitle;
+  const fb=$('focus-bar');
+  fb.className='focus-bar '+(s.zone==='user'?'user':s.zone==='kernel'?'kernel':'');
+  fb.innerHTML=focusHTML(s);
+  $('privbar').innerHTML=privbarHTML(s);
+  $('regs').innerHTML=regsHTML(s);
+  $('code').innerHTML=codeHTML(s);
+  $('flow').innerHTML=flowHTML(s);
+  $('struct').innerHTML=data.renderStruct(s);
+  const b=$('badge');
+  b.textContent=s.badge;
+  b.className='badge '+s.zone;
+  $('narr-text').innerHTML=s.narr;
+  $('counter').textContent=(cur+1)+' / '+data.steps.length;
+  $('prev').disabled=cur===0;
+  $('next').disabled=cur===data.steps.length-1;
+}
+
+function go(n){cur=Math.max(0,Math.min(D().steps.length-1,n));render();}
+function stopAuto(){autoOn=false;clearTimeout(timer);$('auto').textContent='▶ 自动';$('auto').classList.remove('primary');}
+function setArch(a){
+  if(ARCH===a)return;
+  stopAuto();ARCH=a;cur=0;
+  $('arm').classList.toggle('on',a==='arm');
+  $('x86').classList.toggle('on',a==='x86');
+  render();
+}
+
+$('next').onclick=()=>go(cur+1);
+$('prev').onclick=()=>go(cur-1);
+$('reset').onclick=()=>{stopAuto();go(0);};
+$('arm').onclick=()=>setArch('arm');
+$('x86').onclick=()=>setArch('x86');
+$('auto').onclick=()=>{
+  if(autoOn){stopAuto();return;}
+  autoOn=true;$('auto').textContent='⏸ 暂停';$('auto').classList.add('primary');
+  (function loop(){if(!autoOn)return;if(cur>=D().steps.length-1){stopAuto();return;}go(cur+1);timer=setTimeout(loop,+$('speed').value);})();
+};
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'){go(cur+1);e.preventDefault();}
+  if(e.key==='ArrowLeft'){go(cur-1);e.preventDefault();}
+  if(e.key===' '){$('auto').click();e.preventDefault();}
+});
+render();
+</script>
+</body>
+</html>

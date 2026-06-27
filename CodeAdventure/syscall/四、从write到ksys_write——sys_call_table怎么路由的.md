@@ -1,4 +1,4 @@
-# 从 write(1, "hello", 5) 到 ksys_write() —— sys_call_table 怎么路由的
+# 四、从 write(1, "hello", 5) 到 ksys_write() —— sys_call_table 怎么路由的
 
 ---
 
@@ -7,7 +7,7 @@
 
 ---
 
-> **系列说明**：这是"一句 printf 怎么出现在屏幕上"系列的第四篇，也是系统调用之旅的收尾。前三篇分别讲了：第一篇《[printf("hello") 怎么变成 write(1, "hello", 5)](https://github.com/xyz2b/article/blob/main/CodeAdventure/printf怎么变成write——libc的stdout缓冲机制.md)》讲清 libc 的 stdout 缓冲，把数据交到 `write()` 系统调用手上；第二篇《`svc` / `syscall` 指令到底做了什么——读 MSR、切换 CPL、换栈》讲清用户态 → 内核态那道硬件边界（待发布）；第三篇《内核入口 `el0_svc` / `entry_SYSCALL_64` 的汇编做了什么》讲清怎么保存寄存器、建立 `struct pt_regs`、搭好内核上下文（待发布）。这一篇把前面铺好的路连起来，聚焦最后一层：内核拿到系统调用号后，怎么通过 `sys_call_table` 路由到 `ksys_write()`。
+> **系列说明**：这是"一句 printf 怎么出现在屏幕上"系列的第四篇，也是系统调用之旅的收尾。前三篇分别讲了：第一篇《[printf("hello") 怎么变成 write(1, "hello", 5)](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)》讲清 libc 的 stdout 缓冲，把数据交到 `write()` 系统调用手上；第二篇《[`svc` / `syscall` 指令到底做了什么——从 ring 3 到 ring 0 的硬件门](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)》讲清用户态 → 内核态那道硬件边界；第三篇《内核入口 `el0_svc` / `entry_SYSCALL_64` 的汇编做了什么》讲清怎么保存寄存器、建立 `struct pt_regs`、搭好内核上下文（待发布）。这一篇把前面铺好的路连起来，聚焦最后一层：内核拿到系统调用号后，怎么通过 `sys_call_table` 路由到 `ksys_write()`。
 
 ---
 

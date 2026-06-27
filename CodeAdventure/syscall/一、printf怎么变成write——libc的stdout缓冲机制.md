@@ -1,4 +1,4 @@
-# printf("hello") 怎么变成 write(1, "hello", 5) —— libc 的 stdout 缓冲机制
+# 一、printf("hello") 怎么变成 write(1, "hello", 5) —— libc 的 stdout 缓冲机制
 
 ---
 
@@ -787,7 +787,7 @@ before fork
 - **第一篇（本文）**：printf → write（libc 缓冲层）
 - **第二篇**：`svc` / `syscall` 指令的硬件行为（读 MSR、切换 CPL、换栈）
 - **第三篇**：`el0_svc` / `entry_SYSCALL_64` 汇编入口（保存寄存器、构建 `struct pt_regs`）
-- **第四篇**：[write → ksys_write（sys_call_table 派发）](https://github.com/xyz2b/article/blob/main/CodeAdventure/从write到ksys_write——sys_call_table怎么路由的.md)
+- **第四篇**：[write → ksys_write（sys_call_table 派发）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/四、从write到ksys_write——sys_call_table怎么路由的.md)
 
 ---
 

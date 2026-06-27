@@ -7,7 +7,7 @@
 
 ---
 
-上一篇《[多线程 malloc 为什么会变慢——arena 到 bins 全景](https://github.com/xyz2b/article/blob/main/CodeAdventure/多线程malloc为什么会变慢——arena到bins全景.md)》末尾把多线程 malloc 的瓶颈钉死在一把锁上：
+上一篇《[多线程 malloc 为什么会变慢——arena 到 bins 全景](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/多线程malloc为什么会变慢——arena到bins全景.md)》末尾把多线程 malloc 的瓶颈钉死在一把锁上：
 
 > "那把锁是 `malloc_state.mutex`，锁的是整个 arena 账本……超过 arena 上限后线程共享 arena，这把锁就成了多线程 malloc 的瓶颈。"
 
@@ -669,4 +669,4 @@ gcc -O0 -pthread -o sched sched.c
 
 ---
 
-> 这是"一条代码的冒险之旅"系列的第五篇。上一篇讲多线程 malloc 为什么慢、那把锁是什么：《[多线程 malloc 为什么会变慢——arena 到 bins 全景](https://github.com/xyz2b/article/blob/main/CodeAdventure/多线程malloc为什么会变慢——arena到bins全景.md)》。本篇把那把锁（`pthread_mutex_t`）单独拎出来，从用户态 CAS 快路径追到了内核调度器——**同一个 lock，无竞争时 5 纳秒纯用户态、有竞争时陷内核睡觉被唤醒排队过调度器，差出几个数量级。** 下一篇待定（可能继续挖并发的坑，也可能换条线索）。
+> 这是"一条代码的冒险之旅"系列的第五篇。上一篇讲多线程 malloc 为什么慢、那把锁是什么：《[多线程 malloc 为什么会变慢——arena 到 bins 全景](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/多线程malloc为什么会变慢——arena到bins全景.md)》。本篇把那把锁（`pthread_mutex_t`）单独拎出来，从用户态 CAS 快路径追到了内核调度器——**同一个 lock，无竞争时 5 纳秒纯用户态、有竞争时陷内核睡觉被唤醒排队过调度器，差出几个数量级。** 下一篇待定（可能继续挖并发的坑，也可能换条线索）。

@@ -10,7 +10,7 @@
 
 ---
 
-上一篇《[free 完再 malloc 为什么拿回同一块](https://github.com/xyz2b/article/blob/main/CodeAdventure/free完再malloc为什么拿回同一块.md)》末尾讲 fastbin 时留了个钩子：
+上一篇《[free 完再 malloc 为什么拿回同一块](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/free完再malloc为什么拿回同一块.md)》末尾讲 fastbin 时留了个钩子：
 
 > "fastbin **不是线程私有**的，所以要上锁……**谁和谁共用、那把锁到底锁的是什么**，牵出的是 glibc 的 arena（分配区）机制——本篇用不到，留到下一篇专门讲。"
 
@@ -1008,4 +1008,4 @@ arena 扩张上限（8×nproc）就是为了平衡这两种压力：arena 越多
 
 ---
 
-> 这是"一条代码的冒险之旅"系列的第四篇。上一篇讲 `free` 完再 `malloc` 为什么拿回同一块、以及 use-after-free 的物理根源：《[free 完再 malloc 为什么拿回同一块](https://github.com/xyz2b/article/blob/main/CodeAdventure/free完再malloc为什么拿回同一块.md)》。下一篇把这把 `malloc_state.mutex`（一个普通的 `pthread_mutex_t`）单独拎出来，从用户态 CAS 一路追到内核调度器：《[一个 pthread_mutex_lock 到底锁了什么](https://github.com/xyz2b/article/blob/main/CodeAdventure/一个pthread_mutex_lock到底锁了什么.md)》。
+> 这是"一条代码的冒险之旅"系列的第四篇。上一篇讲 `free` 完再 `malloc` 为什么拿回同一块、以及 use-after-free 的物理根源：《[free 完再 malloc 为什么拿回同一块](https://github.com/xyz2b/article/blob/main/CodeAdventure/malloc/free完再malloc为什么拿回同一块.md)》。下一篇把这把 `malloc_state.mutex`（一个普通的 `pthread_mutex_t`）单独拎出来，从用户态 CAS 一路追到内核调度器：《[一个 pthread_mutex_lock 到底锁了什么](https://github.com/xyz2b/article/blob/main/CodeAdventure/thread/一个pthread_mutex_lock到底锁了什么.md)》。
