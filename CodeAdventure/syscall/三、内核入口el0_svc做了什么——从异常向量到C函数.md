@@ -2,7 +2,7 @@
 
 ---
 
-> **🎯 交互式可视化**：[syscall-entry-visualizer.html](../front/syscall-entry-visualizer.html)
+> **🎯 交互式可视化**：[→ syscall-entry-visualizer.html](https://xyz2b.github.io/article/CodeAdventure/front/syscall-entry-visualizer.html)
 > `svc` / `syscall` 指令落地后，内核入口那段汇编怎么一步步建好现场：切换 per-CPU 指针、把寄存器全压进 `struct pt_regs`、再跳进 C 函数 `do_el0_svc()` 的全过程动画。可切 ARM64 / x86-64 两条路对照，逐步看 CPU 寄存器变化与内核栈上 `pt_regs` 一格格填满。
 
 ---
@@ -153,7 +153,7 @@ x86-64 没有"向量表"这一层——`syscall` 指令直接把 `rip` 设成 `I
 
 ### 3.1 ARM64：切换 sp_el0（per-task 指针）
 
-ARM64 内核在 EL1（内核态）运行时，把 `sp_el0` 寄存器用作 **`current` 任务指针**（不当栈用，内核栈用 `sp_el1`）。但 `svc` 触发异常进入内核时，`sp_el0` 还装着**用户态的栈指针**（用户程序在 EL0 时用它当栈），所以入口汇编第一步要把它换成当前任务的 `task_struct` 指针。这段在 `kernel_entry` 宏里（`arch/arm64/kernel/entry.S`）：
+ARM64 内核在 EL1（内核态）运行时，把 `sp_el0` 寄存器用作 **`current` 任务指针**（不当栈用，内核栈用 `sp_el1`）。但 `svc` 触发异常进入内核时，`sp_el0` 还装着**用户态的栈指针**（用户程序在 EL0 时用它当栈），所以入口汇编第一步要把它换成当前任务的 `task_struct` 指针。这段在 `kernel_entry` 宏里（[`arch/arm64/kernel/entry.S`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/entry.S)）：
 
 ```asm
     .macro  kernel_entry, el, regsize = 64
@@ -170,7 +170,7 @@ ARM64 内核在 EL1（内核态）运行时，把 `sp_el0` 寄存器用作 **`cu
 
 ### 3.2 x86-64：SWAPGS（你给的核心概念之一）
 
-x86-64 用的是另一套机制，但目的一模一样。x86 有个 `GS` 段寄存器，内核把它指向 **per-CPU 数据区**（`current_task`、内核栈顶、TSS 等都在里面）。用户态的 `GS` 指向 **TLS 线程局部存储**（线程私有变量），所以进内核第一条指令就是 `swapgs`——它把 **`IA32_GS_BASE` MSR**（当前生效的 `GS` 基址）和 **`IA32_KERNEL_GS_BASE` MSR**（内核预存的 per-CPU 数据区地址）对调，一条指令完成用户态 ↔ 内核态的上下文切换（源码 `arch/x86/entry/entry_64.S`）：
+x86-64 用的是另一套机制，但目的一模一样。x86 有个 `GS` 段寄存器，内核把它指向 **per-CPU 数据区**（`current_task`、内核栈顶、TSS 等都在里面）。用户态的 `GS` 指向 **TLS 线程局部存储**（线程私有变量），所以进内核第一条指令就是 `swapgs`——它把 **`IA32_GS_BASE` MSR**（当前生效的 `GS` 基址）和 **`IA32_KERNEL_GS_BASE` MSR**（内核预存的 per-CPU 数据区地址）对调，一条指令完成用户态 ↔ 内核态的上下文切换（源码 [`arch/x86/entry/entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)）：
 
 ```asm
 SYM_CODE_START(entry_SYSCALL_64)
@@ -213,7 +213,7 @@ SYM_CODE_START(entry_SYSCALL_64)
     stp x28, x29, [sp, #16 * 14]   ; 一直存到 x29
 ```
 
-`sp` 此刻指向内核栈上为 `pt_regs` 预留的空间。`x0,x1` 存到偏移 0、`x2,x3` 存到偏移 16……一路到 `x29`。后面还有指令把 `x30`（链接寄存器）、`sp`、`pc`、`pstate` 也存进去。存完，内核栈上就躺着一个完整的 `struct pt_regs`，结构是（`arch/arm64/include/asm/ptrace.h`）：
+`sp` 此刻指向内核栈上为 `pt_regs` 预留的空间。`x0,x1` 存到偏移 0、`x2,x3` 存到偏移 16……一路到 `x29`。后面还有指令把 `x30`（链接寄存器）、`sp`、`pc`、`pstate` 也存进去。存完，内核栈上就躺着一个完整的 `struct pt_regs`，结构是（[`arch/arm64/include/asm/ptrace.h`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/include/asm/ptrace.h)）：
 
 ```c
 struct pt_regs {
@@ -229,7 +229,7 @@ struct pt_regs {
 
 ### 4.2 x86-64：手搭硬件帧 + PUSH_AND_CLEAR_REGS
 
-x86-64 因为 `syscall` 指令"省事"——它不像中断那样自动把 `SS/RSP/RFLAGS/CS/RIP` 压栈，而是把返回地址塞进 `rcx`、把 `rflags` 塞进 `r11` 就走了。所以入口汇编得**手动把这个"硬件帧"补出来**，让 `pt_regs` 的头部长得跟中断进来时一样（源码 `entry_64.S`）：
+x86-64 因为 `syscall` 指令"省事"——它不像中断那样自动把 `SS/RSP/RFLAGS/CS/RIP` 压栈，而是把返回地址塞进 `rcx`、把 `rflags` 塞进 `r11` 就走了。所以入口汇编得**手动把这个"硬件帧"补出来**，让 `pt_regs` 的头部长得跟中断进来时一样（源码 [`entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)）：
 
 ```asm
     /* Construct struct pt_regs on stack */
@@ -253,7 +253,7 @@ x86-64 因为 `syscall` 指令"省事"——它不像中断那样自动把 `SS/R
 
 汇编搭好 `pt_regs`、切好上下文，最后一步是**跳进 C**。它怎么把那块 `pt_regs` 交给 C 函数？答案是按调用约定，把 `pt_regs` 的地址放进"第一个参数寄存器"。
 
-x86-64 这一步特别直白（`entry_64.S`）：
+x86-64 这一步特别直白（[`entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)）：
 
 ```asm
     movq    %rsp, %rdi        ; rdi = 第一个参数 = 指向 pt_regs 的指针（栈顶就是 pt_regs）
@@ -337,7 +337,7 @@ LEAVE do_el0_svc: x0(ret)=38
 
 ### C 代码是怎么读到 regs[8] 的：do_el0_svc 源码
 
-我们按偏移 64 读出了系统调用号，内核自己也是这么干的，只是写法是结构体成员。`do_el0_svc` 的源码（`arch/arm64/kernel/syscall.c`）短得只有一行实质内容：
+我们按偏移 64 读出了系统调用号，内核自己也是这么干的，只是写法是结构体成员。`do_el0_svc` 的源码（[`arch/arm64/kernel/syscall.c`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/syscall.c)）短得只有一行实质内容：
 
 ```c
 void do_el0_svc(struct pt_regs *regs)
@@ -349,7 +349,7 @@ void do_el0_svc(struct pt_regs *regs)
 
 `regs->regs[8]` 和我们 bpftrace 里的 `*(uint64*)(arg0 + 64)` 是同一个东西——一个用结构体成员名，一个用裸偏移。这就闭环了：**汇编用 `stp` 把 `x8` 存进 `regs[8]`，C 用 `regs->regs[8]` 把它读出来，作为系统调用号去查表。**
 
-再往下，`el0_svc_common` → `invoke_syscall` 真正查表并调用，最后把返回值写回 `pt_regs`（`arch/arm64/kernel/syscall.c`）：
+再往下，`el0_svc_common` → `invoke_syscall` 真正查表并调用，最后把返回值写回 `pt_regs`（[`arch/arm64/kernel/syscall.c`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/syscall.c)）：
 
 ```c
 static void invoke_syscall(struct pt_regs *regs, unsigned int scno, ...)
@@ -371,7 +371,7 @@ static void invoke_syscall(struct pt_regs *regs, unsigned int scno, ...)
 
 C 函数跑完，返回值已经写回 `pt_regs->regs[0]`（x86 是 `pt_regs->ax`）。现在要原路返回用户态：**把 `pt_regs` 里的寄存器一个个倒回 CPU，再执行返回指令**。这是进入路径的镜像。
 
-ARM64 用 `kernel_exit` 宏，最后一条是 `eret`（`arch/arm64/kernel/entry.S`）：
+ARM64 用 `kernel_exit` 宏，最后一条是 `eret`（[`arch/arm64/kernel/entry.S`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/entry.S)）：
 
 ```asm
     ...
@@ -383,7 +383,7 @@ ARM64 用 `kernel_exit` 宏，最后一条是 `eret`（`arch/arm64/kernel/entry.
 
 `eret` 会从系统寄存器里恢复返回地址和处理器状态，把特权级切回 EL0，CPU 落回用户程序里 `svc` 的下一条指令，此时 `x0` 已经是返回值。
 
-x86-64 走 `sysret` 路径，是 `entry_SYSCALL_64` 进入动作的精确逆操作（`entry_64.S`）：
+x86-64 走 `sysret` 路径，是 `entry_SYSCALL_64` 进入动作的精确逆操作（[`entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)）：
 
 ```asm
 syscall_return_via_sysret:
@@ -405,7 +405,7 @@ syscall_return_via_sysret:
 
 ### 8.1 ARM64：el0t_64_sync → el0_svc 一条龙
 
-ARM64 的入口路径（`arch/arm64/kernel/entry.S`，本机实测）：
+ARM64 的入口路径（[`arch/arm64/kernel/entry.S`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/entry.S)，本机实测）：
 
 ```asm
 // 异常向量表入口（VBAR_EL1 + 0x400）
@@ -443,7 +443,7 @@ el0t_64_sync:
 
 ### 8.2 x86-64：entry_SYSCALL_64 一条龙
 
-x86-64 的入口路径（`arch/x86/entry/entry_64.S`，源码对照）：
+x86-64 的入口路径（[`arch/x86/entry/entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)，源码对照）：
 
 ```asm
 SYM_CODE_START(entry_SYSCALL_64)
@@ -546,14 +546,21 @@ SYM_CODE_END(entry_SYSCALL_64)
 ## 十、参考资料
 
 - Linux 内核源码：https://github.com/torvalds/linux （本文片段基于 v6.12）
-- ARM64 入口汇编：`arch/arm64/kernel/entry.S`（`kernel_entry` / `kernel_exit` 宏、向量表）
-- ARM64 系统调用派发：`arch/arm64/kernel/syscall.c`（`do_el0_svc` / `el0_svc_common` / `invoke_syscall`）
-- ARM64 异常分流：`arch/arm64/kernel/entry-common.c`（`el0t_64_sync_handler`）
-- x86-64 入口汇编：`arch/x86/entry/entry_64.S`（`entry_SYSCALL_64` / `syscall_return_via_sysret`）
-- x86-64 系统调用派发：`arch/x86/entry/common.c`（`do_syscall_64`）
-- `struct pt_regs` 定义：`arch/arm64/include/asm/ptrace.h` / `arch/x86/include/asm/ptrace.h`
+- ARM64 入口汇编：[`arch/arm64/kernel/entry.S`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/entry.S)（`kernel_entry` / `kernel_exit` 宏、向量表）
+- ARM64 系统调用派发：[`arch/arm64/kernel/syscall.c`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/syscall.c)（`do_el0_svc` / `el0_svc_common` / `invoke_syscall`）
+- ARM64 异常分流：[`arch/arm64/kernel/entry-common.c`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/entry-common.c)（`el0t_64_sync_handler`）
+- x86-64 入口汇编：[`arch/x86/entry/entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)（`entry_SYSCALL_64` / `syscall_return_via_sysret`）
+- x86-64 系统调用派发：[`arch/x86/entry/common.c`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/common.c)（`do_syscall_64`）
+- `struct pt_regs` 定义：[`arch/arm64/include/asm/ptrace.h`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/include/asm/ptrace.h) / [`arch/x86/include/asm/ptrace.h`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/include/asm/ptrace.h)
 
 ---
 
 上一篇：[`svc` / `syscall` 指令到底做了什么——从 ring 3 到 ring 0 的硬件门](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)
 下一篇：[从 write 到 ksys_write——sys_call_table 怎么路由的](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/四、从write到ksys_write——sys_call_table怎么路由的.md)
+
+完整系列：
+
+- **第一篇**：[printf → write（libc 缓冲层）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)
+- **第二篇**：[`svc` / `syscall` 指令的硬件行为（从 ring3 到 ring0 的硬件门）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)
+- **第三篇（本文）**：`el0_svc` / `entry_SYSCALL_64` 汇编入口（从异常向量到 C 函数）
+- **第四篇**：[write → ksys_write（sys_call_table 派发）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/四、从write到ksys_write——sys_call_table怎么路由的.md)

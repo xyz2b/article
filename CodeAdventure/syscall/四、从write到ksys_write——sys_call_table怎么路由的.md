@@ -7,7 +7,7 @@
 
 ---
 
-> **系列说明**：这是"一句 printf 怎么出现在屏幕上"系列的第四篇，也是系统调用之旅的收尾。前三篇分别讲了：第一篇《[printf("hello") 怎么变成 write(1, "hello", 5)](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)》讲清 libc 的 stdout 缓冲，把数据交到 `write()` 系统调用手上；第二篇《[`svc` / `syscall` 指令到底做了什么——从 ring 3 到 ring 0 的硬件门](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)》讲清用户态 → 内核态那道硬件边界；第三篇《内核入口 `el0_svc` / `entry_SYSCALL_64` 的汇编做了什么》讲清怎么保存寄存器、建立 `struct pt_regs`、搭好内核上下文（待发布）。这一篇把前面铺好的路连起来，聚焦最后一层：内核拿到系统调用号后，怎么通过 `sys_call_table` 路由到 `ksys_write()`。
+> **系列说明**：这是"一句 printf 怎么出现在屏幕上"系列的第四篇，也是系统调用之旅的收尾。前三篇分别讲了：第一篇《[printf("hello") 怎么变成 write(1, "hello", 5)](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)》讲清 libc 的 stdout 缓冲，把数据交到 `write()` 系统调用手上；第二篇《[`svc` / `syscall` 指令到底做了什么——从 ring 3 到 ring 0 的硬件门](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)》讲清用户态 → 内核态那道硬件边界；第三篇《[内核入口 `el0_svc` / `entry_SYSCALL_64` 的汇编做了什么](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/三、内核入口el0_svc做了什么——从异常向量到C函数.md)》讲清怎么保存寄存器、建立 `struct pt_regs`、搭好内核上下文。这一篇把前面铺好的路连起来，聚焦最后一层：内核拿到系统调用号后，怎么通过 `sys_call_table` 路由到 `ksys_write()`。
 
 ---
 
@@ -256,7 +256,7 @@ objdump -d 03_raw_syscall | grep -A 20 '<my_write>:'
 
 ### 2.2 ARM64 系统调用的寄存器约定
 
-ARM64 的系统调用遵循以下约定（定义在 Linux 内核文档 `Documentation/arm64/syscall-abi.rst`）：
+ARM64 的系统调用遵循以下约定（定义在 Linux 内核文档 [`Documentation/arm64/syscall-abi.rst`](https://github.com/torvalds/linux/blob/master/Documentation/arch/arm64/syscall-abi.rst)）：
 
 | 寄存器 | 用途 |
 |--------|------|
@@ -310,7 +310,7 @@ x86-64 的约定不同：
 
 ### 3.1 sys_call_table 的结构
 
-`sys_call_table` 是一个函数指针数组，每个元素指向一个系统调用的内核实现。内核代码里的定义（简化版）：
+`sys_call_table` 是一个函数指针数组，每个元素指向一个系统调用的内核实现。内核代码里的定义（简化版，见 [`arch/arm64/kernel/sys.c`](https://github.com/torvalds/linux/blob/master/arch/arm64/kernel/sys.c)）：
 
 ```c
 // arch/arm64/kernel/sys.c
@@ -375,7 +375,7 @@ ffff800080410068 t proc_sys_write
 1. 从 `struct pt_regs` 里取出参数（`x0`/`x1`/`x2`）。
 2. 调用 `ksys_write()`。
 
-简化后的代码（内核源码 `fs/read_write.c`）：
+简化后的代码（内核源码 [`fs/read_write.c`](https://github.com/torvalds/linux/blob/master/fs/read_write.c)）：
 
 ```c
 SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf, size_t, count)
@@ -586,7 +586,7 @@ Press Enter to call write...
 
 ### 5.2 struct pt_regs 的结构
 
-内核用 `struct pt_regs` 保存系统调用时的寄存器现场。在 ARM64 上（`arch/arm64/include/asm/ptrace.h`）：
+内核用 `struct pt_regs` 保存系统调用时的寄存器现场。在 ARM64 上（[`arch/arm64/include/asm/ptrace.h`](https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/ptrace.h)）：
 
 ```c
 struct pt_regs {
@@ -663,34 +663,34 @@ x86-64 的逻辑类似，只是调用号和参数寄存器不同。
 ### 6.1 系统调用表的定义
 
 **ARM64**：
-- `arch/arm64/kernel/sys.c`：定义 `sys_call_table`
-- `include/uapi/asm-generic/unistd.h`：通用的系统调用号定义
-- `arch/arm64/include/asm/unistd.h`：ARM64 的系统调用号
+- [`arch/arm64/kernel/sys.c`](https://github.com/torvalds/linux/blob/master/arch/arm64/kernel/sys.c)：定义 `sys_call_table`
+- [`include/uapi/asm-generic/unistd.h`](https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h)：通用的系统调用号定义
+- [`arch/arm64/include/asm/unistd.h`](https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/unistd.h)：ARM64 的系统调用号
 
 **x86-64**：
-- `arch/x86/entry/syscall_64.c`：定义 `sys_call_table`
-- `arch/x86/entry/syscalls/syscall_64.tbl`：系统调用表（文本格式）
+- [`arch/x86/entry/syscall_64.c`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscall_64.c)：定义 `sys_call_table`
+- [`arch/x86/entry/syscalls/syscall_64.tbl`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)：系统调用表（文本格式）
 
 ### 6.2 系统调用入口
 
 **ARM64**：
-- `arch/arm64/kernel/entry.S`：汇编入口 `el0_svc`
-- `arch/arm64/kernel/syscall.c`：派发函数 `invoke_syscall()`
+- [`arch/arm64/kernel/entry.S`](https://github.com/torvalds/linux/blob/master/arch/arm64/kernel/entry.S)：汇编入口 `el0_svc`
+- [`arch/arm64/kernel/syscall.c`](https://github.com/torvalds/linux/blob/master/arch/arm64/kernel/syscall.c)：派发函数 `invoke_syscall()`
 
 **x86-64**：
-- `arch/x86/entry/entry_64.S`：汇编入口 `entry_SYSCALL_64`
-- `arch/x86/entry/common.c`：派发函数 `do_syscall_64()`
+- [`arch/x86/entry/entry_64.S`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/entry_64.S)：汇编入口 `entry_SYSCALL_64`
+- [`arch/x86/entry/common.c`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/common.c)：派发函数 `do_syscall_64()`
 
 ### 6.3 write 系统调用的实现
 
-- `fs/read_write.c`：
+- [`fs/read_write.c`](https://github.com/torvalds/linux/blob/master/fs/read_write.c)：
   - `SYSCALL_DEFINE3(write, ...)` 生成 `__arm64_sys_write` 或 `__x64_sys_write`
   - `ksys_write()` 函数
   - `vfs_write()` 函数
 
 ### 6.4 关键宏
 
-`SYSCALL_DEFINE3` 宏（`include/linux/syscalls.h`）会展开成：
+`SYSCALL_DEFINE3` 宏（[`include/linux/syscalls.h`](https://github.com/torvalds/linux/blob/master/include/linux/syscalls.h)）会展开成：
 
 ```c
 // SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf, size_t, count)
@@ -897,13 +897,20 @@ Overhead:      90x
 ## 十、参考资料
 
 - Linux 内核源码：https://github.com/torvalds/linux
-- ARM64 系统调用 ABI：`Documentation/arm64/syscall-abi.rst`
-- x86-64 系统调用约定：`arch/x86/entry/calling.h`
+- ARM64 系统调用 ABI：[`Documentation/arm64/syscall-abi.rst`](https://github.com/torvalds/linux/blob/master/Documentation/arch/arm64/syscall-abi.rst)
+- x86-64 系统调用约定：[`arch/x86/entry/calling.h`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/calling.h)
 - `man 2 syscall`：系统调用的用户态接口
 - `man 2 write`：write 系统调用的文档
 
 ---
 
-上一篇：内核入口 `el0_svc` / `entry_SYSCALL_64` 的汇编做了什么（待发布）  
+上一篇：[内核入口 `el0_svc` / `entry_SYSCALL_64` 的汇编做了什么——从异常向量到 C 函数](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/三、内核入口el0_svc做了什么——从异常向量到C函数.md)  
 下一篇：`ksys_write` 之后——字符怎么走到 tty 设备、显示到屏幕（待发布）
+
+完整系列：
+
+- **第一篇**：[printf → write（libc 缓冲层）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)
+- **第二篇**：[`svc` / `syscall` 指令的硬件行为（从 ring3 到 ring0 的硬件门）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)
+- **第三篇**：[`el0_svc` / `entry_SYSCALL_64` 汇编入口（从异常向量到 C 函数）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/三、内核入口el0_svc做了什么——从异常向量到C函数.md)
+- **第四篇（本文）**：write → ksys_write（sys_call_table 派发）
 

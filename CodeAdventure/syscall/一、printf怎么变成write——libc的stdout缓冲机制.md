@@ -242,7 +242,7 @@ gcc -o 01_buffer_modes 01_buffer_modes.c
 - 当前写入位置（`_IO_write_ptr`）
 - 缓冲模式标志
 
-在 glibc 里，`FILE` 结构的完整定义在 `libio/libio.h`，但这是内部实现，不保证稳定。我们可以通过 `/proc` 文件系统间接观察。
+在 glibc 里，`FILE` 结构的完整定义在 [`libio/bits/types/struct_FILE.h`](https://github.com/bminor/glibc/blob/glibc-2.36/libio/bits/types/struct_FILE.h)（早期版本在 `libio/libio.h`，2.28 后已拆分到这里），但这是内部实现，不保证稳定。我们可以通过 `/proc` 文件系统间接观察。
 
 ### 3.1 用 /proc/self/fd 看文件描述符
 
@@ -761,21 +761,23 @@ before fork
 
 ## 十、源码位置
 
-如果想深入阅读 glibc 源码：
+如果想深入阅读 glibc 源码（链接指向 glibc 2.36 tag）：
 
 | 功能 | 文件 |
 |------|------|
-| `printf` 实现 | `stdio-common/vfprintf.c` |
-| `fflush` 实现 | `libio/iofflush.c` |
-| FILE 结构定义 | `libio/libio.h` |
-| 缓冲区管理 | `libio/fileops.c` |
-| `write` 系统调用包装 | `sysdeps/unix/sysv/linux/write.c` |
+| `printf` 入口（thin wrapper） | [`stdio-common/printf.c`](https://github.com/bminor/glibc/blob/glibc-2.36/stdio-common/printf.c) |
+| `vfprintf` 格式化实现 | [`stdio-common/vfprintf-internal.c`](https://github.com/bminor/glibc/blob/glibc-2.36/stdio-common/vfprintf-internal.c) |
+| `fflush` 实现 | [`libio/iofflush.c`](https://github.com/bminor/glibc/blob/glibc-2.36/libio/iofflush.c) |
+| FILE 结构定义 | [`libio/bits/types/struct_FILE.h`](https://github.com/bminor/glibc/blob/glibc-2.36/libio/bits/types/struct_FILE.h) |
+| 缓冲区管理 / `__overflow` | [`libio/fileops.c`](https://github.com/bminor/glibc/blob/glibc-2.36/libio/fileops.c) |
+| `setvbuf` 实现 | [`libio/iosetvbuf.c`](https://github.com/bminor/glibc/blob/glibc-2.36/libio/iosetvbuf.c) |
+| `write` 系统调用包装 | [`sysdeps/unix/sysv/linux/write.c`](https://github.com/bminor/glibc/blob/glibc-2.36/sysdeps/unix/sysv/linux/write.c) |
 
 ## 十一、总结和下一篇预告
 
 这一篇讲了 **libc 缓冲层**，解释了 printf 为什么不直接调用 write，以及缓冲区的三种模式、刷新时机、性能优势。数据到这里被交给了 `write()` 系统调用，下一步就是跨过用户态 → 内核态那道边界。
 
-下一篇《`svc` / `syscall` 指令到底做了什么——读 MSR、切换 CPL、换栈》（待发布）会接着讲：
+下一篇《[`svc` / `syscall` 指令到底做了什么——从 ring3 到 ring0 的硬件门](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)》会接着讲：
 
 1. **`svc #0` / `syscall` 指令**：一条 CPU 指令怎么触发用户态 → 内核态的切换
 2. **特权级切换**：CPL（x86-64）/ 异常级（ARM64）怎么变
@@ -785,10 +787,6 @@ before fork
 完整系列：
 
 - **第一篇（本文）**：printf → write（libc 缓冲层）
-- **第二篇**：`svc` / `syscall` 指令的硬件行为（读 MSR、切换 CPL、换栈）
-- **第三篇**：`el0_svc` / `entry_SYSCALL_64` 汇编入口（保存寄存器、构建 `struct pt_regs`）
+- **第二篇**：[`svc` / `syscall` 指令的硬件行为（从 ring3 到 ring0 的硬件门）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/二、syscall指令做了什么——从ring3到ring0的硬件门.md)
+- **第三篇**：[`el0_svc` / `entry_SYSCALL_64` 汇编入口（从异常向量到 C 函数）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/三、内核入口el0_svc做了什么——从异常向量到C函数.md)
 - **第四篇**：[write → ksys_write（sys_call_table 派发）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/四、从write到ksys_write——sys_call_table怎么路由的.md)
-
----
-
-下一篇：`svc` / `syscall` 指令到底做了什么——读 MSR、切换 CPL、换栈（待发布）

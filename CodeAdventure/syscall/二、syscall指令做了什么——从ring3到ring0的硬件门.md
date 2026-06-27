@@ -2,7 +2,7 @@
 
 ---
 
-> **🎯 交互式可视化**：syscall-gate-visualizer.html
+> **🎯 交互式可视化**：[→ syscall-gate-visualizer.html](https://xyz2b.github.io/article/CodeAdventure/front/syscall-gate-visualizer.html)
 > `svc` / `syscall` 执行的那一瞬间，CPU 硬件在内部做的几件事：切特权级、存返回地址与处理器状态、关中断、从入口寄存器取地址、换内核栈，再跳进向量表的全过程动画。
 
 ---
@@ -622,8 +622,8 @@ Features : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp
 - ARM 架构手册（ARM ARM）：异常向量表布局、`VBAR_EL1` / `ELR_EL1` / `SPSR_EL1` / `ESR_EL1`、`svc` 与 `eret` 语义
 - Intel SDM Vol. 2/3：`SYSCALL` / `SYSRET` 指令、`IA32_LSTAR` / `IA32_STAR` / `IA32_FMASK` / `IA32_EFER.SCE`
 - Linux 内核源码（v6.12）：
-  - `arch/arm64/kernel/entry.S`：异常向量表 `vectors`、`el0t_64_sync`
-  - `arch/x86/entry/entry_64.S`：`entry_SYSCALL_64`、入口手动换栈、`sysret`
+  - [`arch/arm64/kernel/entry.S`](https://github.com/torvalds/linux/blob/v6.12/arch/arm64/kernel/entry.S)：异常向量表 `vectors`、`el0t_64_sync`
+  - [`arch/x86/entry/entry_64.S`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/entry/entry_64.S)：`entry_SYSCALL_64`、入口手动换栈、`sysret`
 - `man 2 syscall`：系统调用的用户态接口与各架构寄存器约定
 - `Documentation/arm64/booting.rst` / `memory.rst`：ARM64 地址空间高低半区划分
 
@@ -631,3 +631,10 @@ Features : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp
 
 上一篇：[printf("hello") 怎么变成 write(1, "hello", 5)——libc 的 stdout 缓冲机制](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)
 下一篇：[内核入口 el0_svc / entry_SYSCALL_64 的汇编做了什么——从异常向量到 C 函数](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/三、内核入口el0_svc做了什么——从异常向量到C函数.md)
+
+完整系列：
+
+- **第一篇**：[printf → write（libc 缓冲层）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/一、printf怎么变成write——libc的stdout缓冲机制.md)
+- **第二篇（本文）**：`svc` / `syscall` 指令的硬件行为（从 ring3 到 ring0 的硬件门）
+- **第三篇**：[`el0_svc` / `entry_SYSCALL_64` 汇编入口（从异常向量到 C 函数）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/三、内核入口el0_svc做了什么——从异常向量到C函数.md)
+- **第四篇**：[write → ksys_write（sys_call_table 派发）](https://github.com/xyz2b/article/blob/main/CodeAdventure/syscall/四、从write到ksys_write——sys_call_table怎么路由的.md)
