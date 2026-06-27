@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>printf 怎么变成 write · libc 的 stdout 缓冲机制</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --yellow:#d29922; --red:#da3633;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1600px;margin:0 auto;padding:10px 24px 16px}
+  h1.t{font-size:17px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12px;margin:0 0 10px}
+
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:7px 12px;margin-bottom:10px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:5px 11px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-info{color:var(--dim);font-variant-numeric:tabular-nums;min-width:120px;text-align:center;margin-left:auto;font-size:12px}
+  input[type=range]{width:160px;accent-color:var(--accent)}
+
+  /* 演示区网格：左右布局 */
+  .demo-grid{display:grid;grid-template-columns:330px 1fr;gap:12px;margin-bottom:10px;align-items:start}
+  @media(max-width:1100px){.demo-grid{grid-template-columns:1fr}}
+
+  /* 面板通用 */
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+  .panel .bd{padding:10px 12px}
+
+  /* 代码展示 */
+  .code-display{background:var(--panel2);border-radius:8px;padding:7px 10px}
+  .code-display pre{margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.45;color:var(--text)}
+  .code-line{display:block;padding:1px 6px;border-radius:4px;transition:.2s}
+  .code-line.active{background:rgba(88,166,255,.16);box-shadow:inset 2px 0 0 var(--accent)}
+  .code-line .kw{color:#ff7b72}
+  .code-line .fn{color:#d2a8ff}
+  .code-line .str{color:#a5d6ff}
+  .code-line .cmt{color:var(--faint)}
+
+  /* 缓冲区可视化 */
+  .buffer-vis{margin-bottom:10px}
+  .buffer-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-family:var(--mono);font-size:11px}
+  .buffer-label{color:var(--accent);font-weight:600}
+  .buffer-size{color:var(--dim)}
+  .buffer-size .curr{color:var(--hot);font-weight:600}
+  .buffer-container{background:var(--panel2);border:2px solid var(--border);border-radius:8px;
+    min-height:60px;padding:8px 10px;position:relative;transition:.3s}
+  .buffer-container.flushing{border-color:var(--hot);box-shadow:0 0 0 2px rgba(240,136,62,.3);animation:flush .5s}
+  @keyframes flush{0%{background:rgba(240,136,62,.12)}100%{background:var(--panel2)}}
+  .buffer-content{font-family:var(--mono);font-size:13px;line-height:1.5;word-wrap:break-word;min-height:40px}
+  .buffer-content.empty{color:var(--faint);font-style:italic}
+  .char{display:inline-block;animation:charPop .3s cubic-bezier(.34,1.56,.64,1)}
+  @keyframes charPop{from{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}
+  .char.newline{background:rgba(240,136,62,.2);color:var(--hot);padding:1px 5px;border-radius:3px;font-weight:600}
+
+  /* 系统调用日志 */
+  .syscall-log{background:var(--panel2);border-radius:8px;padding:8px 10px;min-height:54px;max-height:140px;overflow-y:auto}
+  .syscall-entry{font-family:var(--mono);font-size:11px;line-height:1.6;margin-bottom:3px;animation:logSlide .3s}
+  @keyframes logSlide{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+  .syscall-entry .num{color:var(--faint);margin-right:6px}
+  .syscall-entry .call{color:var(--hot);font-weight:600}
+  .syscall-entry .args{color:var(--accent)}
+  .syscall-entry .ret{color:var(--add)}
+  .syscall-log.empty{color:var(--faint);font-style:italic}
+
+  /* 三模式对比 */
+  .modes-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  @media(max-width:1100px){.modes-grid{grid-template-columns:1fr}}
+  .mode-card{background:var(--panel2);border:2px solid var(--border);border-radius:10px;padding:9px 11px;transition:.3s;cursor:pointer}
+  .mode-card:hover{border-color:var(--dim)}
+  .mode-card.active{border-color:var(--accent);box-shadow:0 0 0 2px rgba(88,166,255,.4)}
+  .mode-header{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .mode-icon{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px}
+  .mode-icon.unbuf{background:rgba(218,54,51,.16);color:var(--red)}
+  .mode-icon.line{background:rgba(88,166,255,.16);color:var(--accent)}
+  .mode-icon.full{background:rgba(210,153,34,.16);color:var(--yellow)}
+  .mode-name{flex:1;font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text)}
+  .mode-badge{font-size:9px;padding:2px 6px;border-radius:4px;background:var(--panel);border:1px solid var(--border);color:var(--dim);font-family:var(--mono)}
+  .mode-desc{font-size:11px;color:var(--dim);line-height:1.4;margin-bottom:6px}
+  .mode-trigger{display:flex;align-items:center;gap:6px;background:rgba(10,14,20,.5);border:1px solid var(--border);border-radius:6px;padding:4px 8px}
+  .mode-trigger-label{font-size:9px;color:var(--faint);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+  .mode-trigger-val{font-family:var(--mono);font-size:10.5px;color:var(--hot)}
+  .mode-status{margin-top:5px;font-size:10px;color:var(--faint)}
+
+  /* 叙事 */
+  .narration{background:rgba(88,166,255,.08);border-left:3px solid var(--accent);
+    padding:9px 13px;border-radius:6px;font-size:12px;line-height:1.55;margin-top:10px;min-height:72px}
+  .narration strong{color:var(--hot);font-weight:600}
+  .narration code{background:rgba(255,255,255,.1);padding:1px 4px;border-radius:3px;font-family:var(--mono);font-size:11.5px}
+  .narration .emph{color:var(--accent);font-weight:600}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">printf 怎么变成 write · libc 的 stdout 缓冲机制</h1>
+  <p class="sub">从 printf("hello") 到 write(1, ..., size) · 看缓冲区如何积累、何时刷新 · 三种模式对比</p>
+
+  <div class="controls">
+    <button id="prev" disabled>上一步</button>
+    <button id="next" class="primary">下一步</button>
+    <button id="auto">自动播放</button>
+    <button id="reset">重置</button>
+    <label style="display:flex;align-items:center;gap:6px;margin-left:12px">
+      <span style="color:var(--dim);font-size:12px">速度</span>
+      <input type="range" id="speed" min="400" max="2000" value="1200" step="100">
+    </label>
+    <div class="step-info"><span id="stepNum">0</span> / <span id="stepTotal">0</span></div>
+  </div>
+
+  <!-- 模式选择器 -->
+  <div class="panel" style="margin-bottom:10px">
+    <div class="ttl">选择缓冲模式 · 点击切换演示</div>
+    <div class="bd">
+      <div class="modes-grid">
+        <!-- 无缓冲 -->
+        <div class="mode-card" id="modeUnbuf" data-mode="unbuf">
+          <div class="mode-header">
+            <div class="mode-icon unbuf">⚡</div>
+            <div class="mode-name">无缓冲</div>
+            <div class="mode-badge">_IONBF</div>
+          </div>
+          <div class="mode-desc">每次 printf 立即触发 write() 系统调用</div>
+          <div class="mode-trigger">
+            <div class="mode-trigger-label">刷新时机</div>
+            <div class="mode-trigger-val">每次 printf</div>
+          </div>
+          <div class="mode-status">典型：stderr</div>
+        </div>
+
+        <!-- 行缓冲 -->
+        <div class="mode-card active" id="modeLine" data-mode="line">
+          <div class="mode-header">
+            <div class="mode-icon line">📝</div>
+            <div class="mode-name">行缓冲</div>
+            <div class="mode-badge">_IOLBF</div>
+          </div>
+          <div class="mode-desc">遇到 \n 或缓冲区满时刷新</div>
+          <div class="mode-trigger">
+            <div class="mode-trigger-label">刷新时机</div>
+            <div class="mode-trigger-val">遇到 \n 或满 4096</div>
+          </div>
+          <div class="mode-status">典型：终端 stdout</div>
+        </div>
+
+        <!-- 全缓冲 -->
+        <div class="mode-card" id="modeFull" data-mode="full">
+          <div class="mode-header">
+            <div class="mode-icon full">📦</div>
+            <div class="mode-name">全缓冲</div>
+            <div class="mode-badge">_IOFBF</div>
+          </div>
+          <div class="mode-desc">缓冲区满或程序退出时刷新</div>
+          <div class="mode-trigger">
+            <div class="mode-trigger-label">刷新时机</div>
+            <div class="mode-trigger-val">满 4096 或 exit()</div>
+          </div>
+          <div class="mode-status">典型：文件重定向</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主演示区：左右布局 -->
+  <div class="demo-grid">
+    <!-- 左侧：代码 -->
+    <div class="panel">
+      <div class="ttl" id="codeTitle">代码 · 当前执行位置</div>
+      <div class="bd">
+        <div class="code-display">
+          <pre id="codeDisplay"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧：缓冲区 + 系统调用 -->
+    <div class="panel">
+      <div class="ttl" id="demoTitle">行缓冲模式 · 缓冲区 + 系统调用</div>
+      <div class="bd">
+        <!-- 缓冲区可视化 -->
+        <div class="buffer-vis">
+          <div class="buffer-meta">
+            <span class="buffer-label" id="bufLabel">stdout 缓冲区 (行缓冲模式)</span>
+            <span class="buffer-size" id="bufSizeWrap"><span class="curr" id="bufSize">0</span> / 4096 字节</span>
+          </div>
+          <div class="buffer-container" id="bufContainer">
+            <div class="buffer-content empty" id="bufContent">[空]</div>
+          </div>
+        </div>
+
+        <!-- 系统调用日志 -->
+        <div class="buffer-meta" style="margin-bottom:6px">
+          <span class="buffer-label">系统调用追踪 (strace)</span>
+          <span class="buffer-size">共 <span class="curr" id="scCount">0</span> 次 write()</span>
+        </div>
+        <div class="syscall-log empty" id="syscallLog">等待刷新触发...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="narration" id="narration"></div>
+</div>
+<script>
+"use strict";
+
+const CODE_MODES = {
+  unbuf: [
+    {line: '<span class="kw">int</span> <span class="fn">main</span>() {', active: false},
+    {line: '    <span class="fn">setvbuf</span>(stdout, NULL, <span class="str">_IONBF</span>, 0);  <span class="cmt">// 无缓冲</span>', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"A"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"B"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"C"</span>);', active: false},
+    {line: '    <span class="kw">return</span> 0;', active: false},
+    {line: '}', active: false},
+  ],
+  line: [
+    {line: '<span class="kw">int</span> <span class="fn">main</span>() {', active: false},
+    {line: '    <span class="cmt">// stdout 默认行缓冲(终端)</span>', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"hello"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">" world"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"\\n"</span>);  <span class="cmt">// ← 触发刷新</span>', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"second line\\n"</span>);', active: false},
+    {line: '    <span class="kw">return</span> 0;', active: false},
+    {line: '}', active: false},
+  ],
+  full: [
+    {line: '<span class="kw">int</span> <span class="fn">main</span>() {', active: false},
+    {line: '    <span class="fn">setvbuf</span>(stdout, NULL, <span class="str">_IOFBF</span>, 4096);  <span class="cmt">// 全缓冲</span>', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"Line 1\\n"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"Line 2\\n"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="fn">printf</span>(<span class="str">"Line 3\\n"</span>);', active: false},
+    {line: '    <span class="fn">sleep</span>(1);', active: false},
+    {line: '    <span class="kw">return</span> 0;  <span class="cmt">// exit 时刷新</span>', active: false},
+    {line: '}', active: false},
+  ]
+};
+
+const STEPS_MODES = {
+  unbuf: [
+    {
+      codeActive: 0,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [],
+      narration: '<strong>无缓冲模式（_IONBF）</strong>：通过 <code>setvbuf(stdout, NULL, _IONBF, 0)</code> 设置。每次 printf 都立即触发 write() 系统调用，完全<span class="emph">不经过缓冲区积累</span>。典型场景：stderr 标准错误流'
+    },
+    {
+      codeActive: 1,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [],
+      narration: '<strong>setvbuf() 设置无缓冲</strong>：告诉 libc 不要缓冲 stdout 的输出。此后每个字符都会立即发送到内核'
+    },
+    {
+      codeActive: 2,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "A", 1', ret: '1'}
+      ],
+      narration: '<strong>printf("A") → 立即 write()</strong>：字符 "A" 不进缓冲区，<span class="emph">直接触发系统调用</span> write(1, "A", 1)。1 字节 1 次系统调用'
+    },
+    {
+      codeActive: 3,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "A", 1', ret: '1'}
+      ],
+      narration: '<strong>sleep(1)</strong>：暂停 1 秒。"A" 已经显示在屏幕上了'
+    },
+    {
+      codeActive: 4,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "A", 1', ret: '1'},
+        {num: 2, call: 'write', args: '1, "B", 1', ret: '1'}
+      ],
+      narration: '<strong>printf("B") → 立即 write()</strong>：又是 1 次系统调用。无缓冲模式下，3 个字符 = 3 次 write()，系统调用开销大（每次 ~100-300ns 的上下文切换）'
+    },
+    {
+      codeActive: 5,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "A", 1', ret: '1'},
+        {num: 2, call: 'write', args: '1, "B", 1', ret: '1'}
+      ],
+      narration: '<strong>sleep(1)</strong>：再次暂停。"B" 也已经显示'
+    },
+    {
+      codeActive: 6,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "A", 1', ret: '1'},
+        {num: 2, call: 'write', args: '1, "B", 1', ret: '1'},
+        {num: 3, call: 'write', args: '1, "C", 1', ret: '1'}
+      ],
+      narration: '<strong>printf("C") → 立即 write()</strong>：第 3 次系统调用。无缓冲的优点是<span class="emph">实时性最强</span>（适合 stderr 错误输出），缺点是<span class="emph">性能最差</span>（频繁陷内核）'
+    },
+    {
+      codeActive: 7,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "A", 1', ret: '1'},
+        {num: 2, call: 'write', args: '1, "B", 1', ret: '1'},
+        {num: 3, call: 'write', args: '1, "C", 1', ret: '1'}
+      ],
+      narration: '<strong>return 0</strong>：程序退出。总结：<span class="emph">3 个字符触发了 3 次 write() 系统调用</span>。适合调试和错误输出，不适合大量 I/O'
+    }
+  ],
+  line: [
+    {
+      codeActive: 0,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [],
+      narration: '<strong>行缓冲模式（_IOLBF）</strong>：stdout 连接到终端时的默认模式。遇到换行符 <code>\\n</code> 或缓冲区满（4096 字节）时刷新。<span class="emph">平衡了实时性和性能</span>：一行内容一次 write()'
+    },
+    {
+      codeActive: 2,
+      buffer: 'hello',
+      bufSize: 5,
+      syscalls: [],
+      narration: '<strong>printf("hello")</strong>：5 个字符写入缓冲区。没有换行符，<span class="emph">数据停在用户态</span>，不触发系统调用。此时屏幕上看不到任何输出'
+    },
+    {
+      codeActive: 3,
+      buffer: 'hello',
+      bufSize: 5,
+      syscalls: [],
+      narration: '<strong>sleep(1)</strong>：暂停 1 秒。"hello" 还躺在缓冲区里，屏幕上仍然是空的。这就是行缓冲的"积累"阶段'
+    },
+    {
+      codeActive: 4,
+      buffer: 'hello world',
+      bufSize: 11,
+      syscalls: [],
+      narration: '<strong>printf(" world")</strong>：继续追加 6 个字符（含空格）。缓冲区现在有 11 字节，仍然没有换行符，<span class="emph">继续积累不刷新</span>'
+    },
+    {
+      codeActive: 5,
+      buffer: 'hello world',
+      bufSize: 11,
+      syscalls: [],
+      narration: '<strong>sleep(1)</strong>：又等 1 秒。"hello world" 还在缓冲区里攒着，屏幕上依然是空的'
+    },
+    {
+      codeActive: 6,
+      buffer: '',
+      bufSize: 0,
+      flushing: true,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "hello world\\n", 12', ret: '12'}
+      ],
+      narration: '<strong>printf("\\n") → 触发刷新！</strong>遇到换行符，libc 检测到刷新条件，调用 <code>write(1, "hello world\\n", 12)</code>。<span class="emph">12 字节一次性发给内核</span>，而不是 3 次分别发。这就是行缓冲的核心优势'
+    },
+    {
+      codeActive: 7,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "hello world\\n", 12', ret: '12'}
+      ],
+      narration: '<strong>sleep(1)</strong>：缓冲区已清空，"hello world" 已经显示在屏幕上'
+    },
+    {
+      codeActive: 8,
+      buffer: '',
+      bufSize: 0,
+      flushing: true,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "hello world\\n", 12', ret: '12'},
+        {num: 2, call: 'write', args: '1, "second line\\n", 12', ret: '12'}
+      ],
+      narration: '<strong>printf("second line\\n")</strong>：带换行符，直接刷新。第 2 次 write()。行缓冲保证：<span class="emph">每行一次系统调用，既保证交互式输出的实时性，又减少系统调用开销</span>'
+    },
+    {
+      codeActive: 9,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "hello world\\n", 12', ret: '12'},
+        {num: 2, call: 'write', args: '1, "second line\\n", 12', ret: '12'}
+      ],
+      narration: '<strong>return 0</strong>：程序退出。总结：<span class="emph">2 行触发 2 次 write()</span>。相比无缓冲减少了系统调用，相比全缓冲保证了行的实时性。这就是终端默认使用行缓冲的原因'
+    }
+  ],
+  full: [
+    {
+      codeActive: 0,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [],
+      narration: '<strong>全缓冲模式（_IOFBF）</strong>：通过 <code>setvbuf(stdout, NULL, _IOFBF, 4096)</code> 设置。只有缓冲区满（4096 字节）或程序退出（exit）时才刷新。<span class="emph">性能最优</span>，但实时性最差。典型场景：stdout 重定向到文件'
+    },
+    {
+      codeActive: 1,
+      buffer: '',
+      bufSize: 0,
+      syscalls: [],
+      narration: '<strong>setvbuf() 设置全缓冲</strong>：告诉 libc 使用 4096 字节的缓冲区，不要在遇到 \\n 时刷新'
+    },
+    {
+      codeActive: 2,
+      buffer: 'Line 1\n',
+      bufSize: 7,
+      syscalls: [],
+      narration: '<strong>printf("Line 1\\n")</strong>：7 个字符写入缓冲区。虽然有换行符，但<span class="emph">全缓冲模式忽略 \\n</span>，不触发刷新。屏幕上看不到输出'
+    },
+    {
+      codeActive: 3,
+      buffer: 'Line 1\n',
+      bufSize: 7,
+      syscalls: [],
+      narration: '<strong>sleep(1)</strong>：等 1 秒。"Line 1" 在缓冲区里，屏幕还是空的'
+    },
+    {
+      codeActive: 4,
+      buffer: 'Line 1\nLine 2\n',
+      bufSize: 14,
+      syscalls: [],
+      narration: '<strong>printf("Line 2\\n")</strong>：继续追加 7 字节。缓冲区现在 14 字节，<span class="emph">远未满 4096，继续积累</span>。两行内容都还在用户态'
+    },
+    {
+      codeActive: 5,
+      buffer: 'Line 1\nLine 2\n',
+      bufSize: 14,
+      syscalls: [],
+      narration: '<strong>sleep(1)</strong>：又等 1 秒。两行都在缓冲区里攒着，屏幕依然空白'
+    },
+    {
+      codeActive: 6,
+      buffer: 'Line 1\nLine 2\nLine 3\n',
+      bufSize: 21,
+      syscalls: [],
+      narration: '<strong>printf("Line 3\\n")</strong>：再追加 7 字节。缓冲区 21 字节，仍然 < 4096。<span class="emph">三行都在等程序退出</span>。全缓冲的极致：能拖就拖'
+    },
+    {
+      codeActive: 7,
+      buffer: 'Line 1\nLine 2\nLine 3\n',
+      bufSize: 21,
+      syscalls: [],
+      narration: '<strong>sleep(1)</strong>：最后等 1 秒。三行内容都还在缓冲区里，一次系统调用都没触发'
+    },
+    {
+      codeActive: 8,
+      buffer: '',
+      bufSize: 0,
+      flushing: true,
+      syscalls: [
+        {num: 1, call: 'write', args: '1, "Line 1\\nLine 2\\nLine 3\\n", 21', ret: '21'}
+      ],
+      narration: '<strong>return 0 → exit 刷新</strong>：程序退出前，libc 自动 fflush 所有打开的流。<span class="emph">21 字节一次性写入</span>，只触发 1 次系统调用。全缓冲的优势：最大化批处理，最小化系统调用开销。缺点：输出延迟到退出时'
+    }
+  ]
+};
+
+let currentMode = 'line';
+let currentStep = 0;
+let autoTimer = null;
+
+const $ = id => document.getElementById(id);
+const codeDisplay = $('codeDisplay');
+const bufContainer = $('bufContainer');
+const bufContent = $('bufContent');
+const syscallLog = $('syscallLog');
+const narration = $('narration');
+const stepNum = $('stepNum');
+const stepTotal = $('stepTotal');
+
+updateStepTotal();
+
+function updateStepTotal() {
+  stepTotal.textContent = STEPS_MODES[currentMode].length;
+}
+
+function renderCode(activeIdx) {
+  const code = CODE_MODES[currentMode];
+  codeDisplay.innerHTML = code.map((c, i) => {
+    const cls = i === activeIdx ? ' active' : '';
+    return `<span class="code-line${cls}">${c.line}</span>`;
+  }).join('\n');
+}
+
+const MODE_META = {
+  unbuf: {codeTitle: '代码 · 无缓冲 (_IONBF)', demoTitle: '无缓冲模式 · 字符直达内核', bufLabel: 'stdout 缓冲区 (无缓冲 · 不积累)', cap: 0},
+  line:  {codeTitle: '代码 · 行缓冲 (_IOLBF)', demoTitle: '行缓冲模式 · 缓冲区 + 系统调用', bufLabel: 'stdout 缓冲区 (行缓冲模式)', cap: 4096},
+  full:  {codeTitle: '代码 · 全缓冲 (_IOFBF)', demoTitle: '全缓冲模式 · 攒满或退出才刷', bufLabel: 'stdout 缓冲区 (全缓冲模式)', cap: 4096},
+};
+
+function render() {
+  const s = STEPS_MODES[currentMode][currentStep];
+  const meta = MODE_META[currentMode];
+
+  renderCode(s.codeActive);
+
+  // 标题 + 标签
+  $('codeTitle').textContent = meta.codeTitle;
+  $('demoTitle').textContent = meta.demoTitle;
+  $('bufLabel').textContent = meta.bufLabel;
+
+  // 缓冲区
+  if (meta.cap === 0) {
+    $('bufSizeWrap').innerHTML = '<span style="color:var(--faint)">— 无缓冲区 —</span>';
+  } else {
+    $('bufSizeWrap').innerHTML = '<span class="curr">' + s.bufSize + '</span> / ' + meta.cap + ' 字节';
+  }
+  bufContainer.classList.toggle('flushing', s.flushing || false);
+
+  if (s.buffer === '') {
+    bufContent.className = 'buffer-content empty';
+    bufContent.textContent = meta.cap === 0 ? '[无缓冲 · printf 直接 write]' : '[空]';
+  } else {
+    bufContent.className = 'buffer-content';
+    bufContent.innerHTML = s.buffer.split('').map((ch, i) => {
+      if (ch === '\n') return '<span class="char newline">\\n</span>';
+      return `<span class="char" style="animation-delay:${i*30}ms">${ch}</span>`;
+    }).join('');
+  }
+
+  // 系统调用日志
+  if (s.syscalls.length === 0) {
+    syscallLog.className = 'syscall-log empty';
+    syscallLog.textContent = '等待刷新触发...';
+  } else {
+    syscallLog.className = 'syscall-log';
+    syscallLog.innerHTML = s.syscalls.map(sc =>
+      `<div class="syscall-entry"><span class="num">[${sc.num}]</span><span class="call">${sc.call}</span>(<span class="args">${sc.args}</span>) = <span class="ret">${sc.ret}</span></div>`
+    ).join('');
+  }
+  $('scCount').textContent = s.syscalls.length;
+
+  // 叙事
+  narration.innerHTML = s.narration;
+
+  // 按钮状态
+  stepNum.textContent = currentStep + 1;
+  $('prev').disabled = currentStep === 0;
+  $('next').disabled = currentStep === STEPS_MODES[currentMode].length - 1;
+}
+
+function next() {
+  if (currentStep < STEPS_MODES[currentMode].length - 1) {
+    currentStep++;
+    render();
+  }
+}
+
+function prev() {
+  if (currentStep > 0) {
+    currentStep--;
+    render();
+  }
+}
+
+function reset() {
+  stopAuto();
+  currentStep = 0;
+  render();
+}
+
+function switchMode(mode) {
+  if (mode === currentMode) return;
+  stopAuto();
+  currentMode = mode;
+  currentStep = 0;
+
+  // 更新卡片激活状态
+  ['unbuf', 'line', 'full'].forEach(m => {
+    const card = $('mode' + m.charAt(0).toUpperCase() + m.slice(1));
+    if (m === mode) {
+      card.classList.add('active');
+    } else {
+      card.classList.remove('active');
+    }
+  });
+
+  updateStepTotal();
+  render();
+}
+
+function startAuto() {
+  if (autoTimer) return;
+  $('auto').textContent = '停止';
+  autoTimer = setInterval(() => {
+    if (currentStep < STEPS_MODES[currentMode].length - 1) {
+      next();
+    } else {
+      stopAuto();
+    }
+  }, 2500 - $('speed').value);
+}
+
+function stopAuto() {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    $('auto').textContent = '自动播放';
+  }
+}
+
+function toggleAuto() {
+  if (autoTimer) {
+    stopAuto();
+  } else {
+    startAuto();
+  }
+}
+
+$('prev').addEventListener('click', prev);
+$('next').addEventListener('click', next);
+$('auto').addEventListener('click', toggleAuto);
+$('reset').addEventListener('click', reset);
+
+// 模式卡片点击切换
+document.querySelectorAll('.mode-card').forEach(card => {
+  card.addEventListener('click', () => switchMode(card.dataset.mode));
+});
+
+// 键盘快捷键
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') { next(); e.preventDefault(); }
+  if (e.key === 'ArrowLeft') { prev(); e.preventDefault(); }
+  if (e.key === ' ') { toggleAuto(); e.preventDefault(); }
+});
+
+render();
+</script>
+</body>
+</html>

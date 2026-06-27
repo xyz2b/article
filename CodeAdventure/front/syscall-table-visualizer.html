@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>从 write 到 ksys_write · sys_call_table 怎么路由的</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --yellow:#d29922; --red:#da3633; --purple:#bc8cff;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1680px;margin:0 auto;padding:10px 24px 16px}
+  h1.t{font-size:17px;margin:0 0 2px;font-weight:700}
+  .sub{color:var(--dim);font-size:12px;margin:0 0 10px}
+
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:7px 12px;margin-bottom:10px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:5px 11px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-info{color:var(--dim);font-variant-numeric:tabular-nums;min-width:110px;text-align:center;margin-left:auto;font-size:12px}
+  input[type=range]{width:150px;accent-color:var(--accent)}
+  .arch-toggle{display:flex;gap:0;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+  .arch-toggle button{border:none;border-radius:0;padding:5px 10px;font-size:12px}
+  .arch-toggle button.on{background:var(--accent);color:#0c1016;font-weight:600}
+
+  /* 主网格：三列 流程 | 寄存器/代码 | sys_call_table */
+  .grid{display:grid;grid-template-columns:240px 1fr 360px;gap:12px;align-items:start}
+  @media(max-width:1280px){.grid{grid-template-columns:1fr}}
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel .ttl{padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .panel .bd{padding:10px 12px}
+
+  /* ===== 流程列 ===== */
+  .flow{display:flex;flex-direction:column;gap:0}
+  .stage{position:relative;border:1.5px solid var(--border);border-radius:8px;padding:4px 8px;background:var(--panel2);transition:.25s;opacity:.5}
+  .stage .zone{font-size:8px;text-transform:uppercase;letter-spacing:.3px;font-weight:700;padding:0 5px;border-radius:4px;display:inline-block;margin-bottom:1px}
+  .stage .zone.user{background:rgba(63,185,80,.16);color:var(--add)}
+  .stage .zone.kernel{background:rgba(188,140,255,.16);color:var(--purple)}
+  .stage .name{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text);line-height:1.3}
+  .stage .desc{font-size:9px;color:var(--dim);margin-top:0;line-height:1.25}
+  .stage.active{opacity:1;border-color:var(--accent);box-shadow:0 0 0 2px rgba(88,166,255,.35)}
+  .stage.done{opacity:.82;border-color:#2d3b30}
+  .stage.active .name{color:#fff}
+  .arrow{height:11px;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:11px;position:relative}
+  .arrow.down-active{color:var(--hot)}
+  .boundary{margin:2px 0;border-top:1px dashed var(--red);position:relative;height:1px}
+  .boundary span{position:absolute;left:50%;top:-7px;transform:translateX(-50%);background:var(--panel);padding:0 8px;font-size:8px;color:var(--red);white-space:nowrap}
+
+  /* ===== 寄存器面板 ===== */
+  .regs{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .reg{background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:5px 9px;transition:.25s}
+  .reg .rn{font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:700}
+  .reg .rv{font-family:var(--mono);font-size:12px;color:var(--text);margin-top:1px;min-height:15px}
+  .reg .rd{font-size:9.5px;color:var(--faint);margin-top:1px}
+  .reg.set{border-color:var(--hot);box-shadow:0 0 0 1px rgba(240,136,62,.3)}
+  .reg.nr{border-color:var(--purple)}
+  .reg.nr .rn{color:var(--purple)}
+  .reg.ret{border-color:var(--add)}
+  .reg.ret .rn{color:var(--add)}
+  .reg .rv.empty{color:var(--faint)}
+
+  /* 代码 */
+  .code-display{background:var(--panel2);border-radius:8px;padding:7px 10px;margin-top:10px}
+  .code-display pre{margin:0;font-family:var(--mono);font-size:11px;line-height:1.5;color:var(--text);white-space:pre-wrap}
+  .code-line{display:block;padding:1px 6px;border-radius:4px;transition:.2s}
+  .code-line.active{background:rgba(88,166,255,.16);box-shadow:inset 2px 0 0 var(--accent)}
+  .code-line .kw{color:#ff7b72}
+  .code-line .fn{color:#d2a8ff}
+  .code-line .str{color:#a5d6ff}
+  .code-line .num{color:#79c0ff}
+  .code-line .cmt{color:var(--faint)}
+
+  /* 终端输出 */
+  .term{margin-top:10px;background:#05080c;border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12px;min-height:24px}
+  .term .prompt{color:var(--add)}
+  .term .out{color:var(--text)}
+  .term .cursor{display:inline-block;width:7px;height:13px;background:var(--add);vertical-align:middle;margin-left:1px;animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* ===== sys_call_table ===== */
+  .sct-meta{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+  .sct-meta .arrptr{color:var(--hot)}
+  .sct-wrap{position:relative;padding-left:22px}
+  .connector{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;overflow:visible}
+  .sct{display:flex;flex-direction:column;gap:2px}
+  .row{display:grid;grid-template-columns:46px 14px 1fr;align-items:center;gap:6px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:2px 8px;transition:.2s;cursor:pointer}
+  .row:hover{border-color:var(--dim);background:#202a36}
+  .row .idx{font-family:var(--mono);font-size:11px;color:var(--dim);text-align:right}
+  .row .ar{color:var(--faint);font-size:10px}
+  .row .fnname{font-family:var(--mono);font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .fnname.ni{color:var(--faint);font-style:italic}
+  .row.hit{border-color:var(--hot);background:rgba(240,136,62,.14);box-shadow:0 0 0 2px rgba(240,136,62,.3)}
+  .row.hit .idx{color:var(--hot);font-weight:700}
+  .row.hit .fnname{color:var(--hot);font-weight:700}
+  .row.scan{border-color:var(--accent)}
+  .row.sel{border-color:var(--accent);background:rgba(88,166,255,.12);box-shadow:0 0 0 2px rgba(88,166,255,.4)}
+  .row.sel .idx{color:var(--accent);font-weight:700}
+  .row .addr{font-family:var(--mono);font-size:9px;color:var(--faint);grid-column:3;margin-top:1px}
+  .ellipsis{text-align:center;color:var(--faint);font-family:var(--mono);font-size:10px;padding:1px;cursor:default}
+
+  /* 函数详情面板 */
+  .fn-detail{margin-top:9px;background:var(--panel2);border:1px solid var(--accent);border-radius:9px;overflow:hidden;transition:.2s}
+  .fn-detail .fd-head{display:flex;align-items:center;gap:8px;padding:4px 10px;border-bottom:1px solid var(--border);background:rgba(88,166,255,.08)}
+  .fn-detail .fd-slot{font-family:var(--mono);font-size:10px;color:var(--accent);font-weight:700;background:rgba(88,166,255,.15);padding:1px 6px;border-radius:4px}
+  .fn-detail .fd-name{font-family:var(--mono);font-size:11.5px;color:#fff;font-weight:700}
+  .fn-detail .fd-file{font-family:var(--mono);font-size:9.5px;color:var(--faint);margin-left:auto}
+  .fn-detail .fd-body{padding:6px 10px}
+  .fn-detail .fd-body pre{margin:0;font-family:var(--mono);font-size:10px;line-height:1.45;color:var(--text);white-space:pre-wrap}
+  .fn-detail .fd-body .kw{color:#ff7b72}
+  .fn-detail .fd-body .fn{color:#d2a8ff}
+  .fn-detail .fd-body .str{color:#a5d6ff}
+  .fn-detail .fd-body .num{color:#79c0ff}
+  .fn-detail .fd-body .cmt{color:var(--faint)}
+  .fn-detail .fd-chain{margin-top:5px;padding-top:5px;border-top:1px dashed var(--border);font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.45}
+  .fn-detail .fd-chain .hl{color:var(--hot);font-weight:700}
+  .fn-detail.empty{border-color:var(--border);border-style:dashed}
+  .fn-detail.empty .fd-body{color:var(--faint);font-size:11px;font-style:italic}
+  .fn-detail.main{border-color:var(--hot)}
+  .fn-detail.main .fd-head{background:rgba(240,136,62,.1)}
+  .fn-detail.main .fd-slot{color:var(--hot);background:rgba(240,136,62,.18)}
+  /* 折叠态 */
+  .fn-detail.collapsed{border-style:dashed;border-color:var(--border)}
+  .fd-collapsed{padding:6px 10px;font-family:var(--mono);font-size:10px;color:var(--faint);text-align:center}
+  /* 展开时高亮脉冲 */
+  .fn-detail.show{animation:fnPop .5s cubic-bezier(.2,.8,.2,1)}
+  @keyframes fnPop{0%{box-shadow:0 0 0 0 rgba(240,136,62,0);transform:translateY(-4px);opacity:.4}
+    40%{box-shadow:0 0 0 4px rgba(240,136,62,.45)}100%{box-shadow:0 0 0 2px rgba(240,136,62,.25);transform:translateY(0);opacity:1}}
+
+  /* 派发指针动画 */
+  .dispatch-eq{margin-top:7px;background:rgba(188,140,255,.08);border:1px dashed var(--purple);border-radius:7px;padding:5px 10px;font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.5;min-height:0}
+  .dispatch-eq .hl{color:var(--hot);font-weight:700}
+  .dispatch-eq .nr{color:var(--purple);font-weight:700}
+  .dispatch-eq.dim{opacity:.4}
+
+  /* 叙事 */
+  .narration{background:rgba(88,166,255,.08);border-left:3px solid var(--accent);
+    padding:9px 13px;border-radius:6px;font-size:12px;line-height:1.55;margin-top:10px;min-height:54px}
+  .narration strong{color:var(--hot);font-weight:600}
+  .narration code{background:rgba(255,255,255,.1);padding:1px 4px;border-radius:3px;font-family:var(--mono);font-size:11.5px}
+  .narration .emph{color:var(--accent);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">从 write(1, "hello\n", 6) 到 ksys_write() · sys_call_table 怎么路由的</h1>
+  <p class="sub">系统调用号 → 查表派发 → 入口函数 → 内核核心函数 · 完整调用流程 + sys_call_table 静态结构</p>
+
+  <div class="controls">
+    <button id="prev" disabled>上一步</button>
+    <button id="next" class="primary">下一步</button>
+    <button id="auto">自动播放</button>
+    <button id="reset">重置</button>
+    <div class="arch-toggle">
+      <button id="archArm" class="on">ARM64</button>
+      <button id="archX86">x86-64</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-left:6px">
+      <span style="color:var(--dim);font-size:12px">速度</span>
+      <input type="range" id="speed" min="400" max="2000" value="1200" step="100">
+    </label>
+    <div class="step-info"><span id="stepNum">1</span> / <span id="stepTotal">0</span></div>
+  </div>
+
+  <div class="grid">
+    <!-- 左列：调用流程 -->
+    <div class="panel">
+      <div class="ttl"><span>调用流程</span><span id="zoneTag" style="font-size:10px;text-transform:none;letter-spacing:0"></span></div>
+      <div class="bd">
+        <div class="flow" id="flow"></div>
+      </div>
+    </div>
+
+    <!-- 中列：寄存器 + 代码 + 终端 -->
+    <div class="panel">
+      <div class="ttl"><span id="regTitle">寄存器现场</span><span id="regSub" style="font-size:10px;text-transform:none;letter-spacing:0;color:var(--faint)"></span></div>
+      <div class="bd">
+        <div class="regs" id="regs"></div>
+        <div class="code-display"><pre id="codeDisplay"></pre></div>
+        <div class="term" id="term"><span class="prompt">$ ./01_hello_write</span><span class="cursor"></span></div>
+      </div>
+    </div>
+
+    <!-- 右列：sys_call_table -->
+    <div class="panel">
+      <div class="ttl"><span>sys_call_table</span><span style="font-size:10px;text-transform:none;letter-spacing:0;color:var(--faint)" id="sctArch">arch/arm64/kernel/sys.c</span></div>
+      <div class="bd">
+        <div class="sct-meta">
+          <span>const syscall_fn_t [__NR_syscalls]</span>
+          <span class="arrptr" id="sctNote">点击查看实现 ↓</span>
+        </div>
+        <div class="sct-wrap" id="sctWrap">
+          <svg class="connector" id="connector"></svg>
+          <div class="sct" id="sct"></div>
+          <div class="fn-detail empty" id="fnDetail">
+            <div class="fd-body">点击上方任意系统调用，查看它指向的内核函数实现</div>
+          </div>
+        </div>
+        <div class="dispatch-eq dim" id="dispatchEq">
+          nr = regs->regs[8];<br>
+          fn = sys_call_table[nr];<br>
+          ret = fn(regs);
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="narration" id="narration"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ============ 架构相关配置 ============ */
+const ARCH = {
+  arm: {
+    name: 'ARM64',
+    nrReg: 'x8', a0:'x0', a1:'x1', a2:'x2',
+    nr: 64, instr: 'svc #0', entry: 'el0_svc',
+    table: 'arch/arm64/kernel/sys.c',
+    entryFn: '__arm64_sys_write',
+    ptreg: 'regs->regs[N]',
+    note: 'x8=调用号, x0~x5=参数',
+  },
+  x86: {
+    name: 'x86-64',
+    nrReg: 'rax', a0:'rdi', a1:'rsi', a2:'rdx',
+    nr: 1, instr: 'syscall', entry: 'entry_SYSCALL_64',
+    table: 'arch/x86/entry/syscall_64.c',
+    entryFn: '__x64_sys_write',
+    ptreg: 'regs->di/si/dx',
+    note: 'rax=调用号, rdi/rsi/rdx=参数',
+  }
+};
+
+/* ============ 流程阶段定义 ============ */
+// zone: user|kernel ; boundary: 在此阶段前画用户/内核分界线
+const STAGES = [
+  {id:'user',   zone:'user',   name:'write(1, "hello\\n", 6)', desc:'用户态 C 程序调用'},
+  {id:'libc',   zone:'user',   name:'libc write() 包装器',     desc:'设置寄存器：调用号 + 参数'},
+  {id:'svc',    zone:'user',   name:'__INSTR__',               desc:'触发异常，请求陷入内核', boundary:true},
+  {id:'entry',  zone:'kernel', name:'__ENTRY__',               desc:'保存寄存器 → 构建 struct pt_regs'},
+  {id:'disp',   zone:'kernel', name:'invoke_syscall(regs)',    desc:'读调用号 → 查 sys_call_table'},
+  {id:'efn',    zone:'kernel', name:'__ENTRYFN__(regs)',       desc:'从 pt_regs 提取参数'},
+  {id:'ksys',   zone:'kernel', name:'ksys_write → vfs_write',  desc:'核心逻辑 → 设备驱动 → 输出'},
+  {id:'ret',    zone:'kernel', name:'返回用户态',              desc:'返回值写回 → eret/sysret', boundary:true},
+];
+
+/* ============ sys_call_table 静态条目 ============ */
+// addr 仅为示意（来自文中 /proc/kallsyms 风格）
+function tableRows(A){
+  return [
+    {idx:0,   fn:'sys_io_setup'},
+    {idx:'…1', ellipsis:true},
+    {idx:56,  fn:'__PFX__sys_openat'},
+    {idx:57,  fn:'__PFX__sys_close'},
+    {idx:62,  fn:'__PFX__sys_lseek'},
+    {idx:63,  fn:'__PFX__sys_read'},
+    {idx:64,  fn:'__PFX__sys_write', hit:true, addr:'ffff800080354f28'},
+    {idx:66,  fn:'__PFX__sys_writev'},
+    {idx:'…2', ellipsis:true},
+    {idx:93,  fn:'__PFX__sys_exit'},
+    {idx:'…3', ellipsis:true, last:true},
+  ];
+}
+
+/* ============ 各系统调用的内核实现（点击 table 行查看） ============ */
+function fnDetails(A){
+  const P = A.name==='ARM64' ? '__arm64' : '__x64';
+  return {
+    0: {file:'fs/aio.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE2</span>(io_setup, <span class="kw">unsigned</span>, nr_events,`,
+        `                aio_context_t __user *, ctxp)`,
+        `{`,
+        `    <span class="kw">return</span> <span class="fn">do_io_setup</span>(nr_events, ctxp);`,
+        `}`,
+      ],
+      chain:`异步 I/O 上下文初始化，与 write 路径无关`},
+    56:{file:'fs/open.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE4</span>(openat, <span class="kw">int</span>, dfd,`,
+        `                <span class="kw">const char</span> __user *, filename,`,
+        `                <span class="kw">int</span>, flags, umode_t, mode)`,
+        `{`,
+        `    <span class="kw">return</span> <span class="fn">do_sys_open</span>(dfd, filename, flags, mode);`,
+        `}`,
+      ],
+      chain:`do_sys_open → do_filp_open → 路径解析，返回新 fd`},
+    57:{file:'fs/open.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE1</span>(close, <span class="kw">unsigned int</span>, fd)`,
+        `{`,
+        `    <span class="kw">int</span> retval = <span class="fn">close_fd</span>(fd);`,
+        `    <span class="cmt">/* 释放 fd 对应的 file 结构 */</span>`,
+        `    <span class="kw">return</span> retval;`,
+        `}`,
+      ],
+      chain:`close_fd → filp_close → __fput 释放文件对象`},
+    62:{file:'fs/read_write.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE3</span>(lseek, <span class="kw">unsigned int</span>, fd,`,
+        `                off_t, offset, <span class="kw">unsigned int</span>, whence)`,
+        `{`,
+        `    <span class="kw">return</span> <span class="fn">ksys_lseek</span>(fd, offset, whence);`,
+        `}`,
+      ],
+      chain:`ksys_lseek → vfs_llseek 移动文件读写位置`},
+    63:{file:'fs/read_write.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE3</span>(read, <span class="kw">unsigned int</span>, fd,`,
+        `                <span class="kw">char</span> __user *, buf, size_t, count)`,
+        `{`,
+        `    <span class="kw">return</span> <span class="fn">ksys_read</span>(fd, buf, count);`,
+        `}`,
+      ],
+      chain:`ksys_read → vfs_read → read_iter，与 write 完全对称`},
+    64:{file:'fs/read_write.c', main:true,
+      lines:[
+        `<span class="cmt">// 宏展开生成入口 ${P}_sys_write(regs)</span>`,
+        `<span class="fn">SYSCALL_DEFINE3</span>(write, <span class="kw">unsigned int</span>, fd,`,
+        `                <span class="kw">const char</span> __user *, buf, size_t, count)`,
+        `{`,
+        `    <span class="kw">return</span> <span class="fn">ksys_write</span>(fd, buf, count);`,
+        `}`,
+      ],
+      chain:`<span class="hl">${P}_sys_write</span> → <span class="hl">ksys_write</span> → vfs_write → write_iter → tty_write`},
+    66:{file:'fs/read_write.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE3</span>(writev, <span class="kw">unsigned long</span>, fd,`,
+        `                <span class="kw">const struct</span> iovec __user *, vec,`,
+        `                <span class="kw">unsigned long</span>, vlen)`,
+        `{`,
+        `    <span class="kw">return</span> <span class="fn">do_writev</span>(fd, vec, vlen, <span class="num">0</span>);`,
+        `}`,
+      ],
+      chain:`分散写：一次系统调用写多个缓冲区 (iovec 数组)`},
+    93:{file:'kernel/exit.c',
+      lines:[
+        `<span class="fn">SYSCALL_DEFINE1</span>(exit, <span class="kw">int</span>, error_code)`,
+        `{`,
+        `    <span class="fn">do_exit</span>((error_code & <span class="num">0xff</span>) << <span class="num">8</span>);`,
+        `}`,
+      ],
+      chain:`do_exit 终止当前线程，释放资源`},
+  };
+}
+
+/* ============ 每步状态 ============ */
+// active: 当前阶段 id；nrFlash: 是否高亮调用号；sctState: 'none'|'scan'|'hit'；
+// regs: 覆盖寄存器显示；usePt: 是否显示 pt_regs；retFlash; term: 输出文本；
+// dispatch: 是否点亮派发表达式；code: 代码键；narr 模板
+function buildSteps(A){
+  const buf='0x4006b8';
+  return [
+  { active:'user', sctState:'none',
+    regs:{a0:'1',a1:'"hello\\n"',a2:'6',nr:'—'},
+    code:'cuser', term:null, dispatch:false,
+    narr:`<strong>用户态发起调用</strong>：C 程序执行 <code>write(1, "hello\\n", 6)</code>，实际调用的是 libc 里的 <code>write()</code> 包装函数。参数：fd=1（标准输出）、buf=字符串地址、count=6。`
+  },
+  { active:'libc', sctState:'none',
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr),setAll:true},
+    code:'clibc', term:null, dispatch:false, nrFlash:true,
+    narr:`<strong>libc 包装器装填寄存器</strong>：按 ${A.name} 调用约定，把<span class="emph">系统调用号 ${A.nr}</span> 放进 <code>${A.nrReg}</code>，参数放进 <code>${A.a0}/${A.a1}/${A.a2}</code>。<code>${A.note}</code>。`
+  },
+  { active:'svc', sctState:'none',
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr),setAll:true},
+    code:'csvc', term:null, dispatch:false,
+    narr:`<strong>执行 <code>${A.instr}</code></strong>：这条特殊指令触发一个异常/陷阱，CPU <span class="emph">从用户态切到内核态</span>（ring 3 → ring 0），跳到内核预设的异常入口。寄存器内容此刻原封不动。`
+  },
+  { active:'entry', sctState:'none', usePt:true,
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr)},
+    code:'centry', term:null, dispatch:false,
+    narr:`<strong>内核入口 <code>${A.entry}</code></strong>：汇编入口把<span class="emph">所有通用寄存器保存到内核栈</span>，组织成 <code>struct pt_regs</code>。从此参数和调用号都从 pt_regs 里读，而不是直接读 CPU 寄存器。`
+  },
+  { active:'disp', sctState:'scan', usePt:true,
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr)},
+    code:'cdisp', term:null, dispatch:true, dispatchLine:1, nrFlash:true,
+    narr:`<strong>读出系统调用号</strong>：派发函数取 <code>nr = ${A.ptrnr}</code>，得到 <span class="emph">${A.nr}</span>。先做边界检查 <code>0 ≤ nr < __NR_syscalls</code>，合法才继续查表。`
+  },
+  { active:'disp', sctState:'hit', usePt:true,
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr)},
+    code:'cdisp', term:null, dispatch:true, dispatchLine:2,
+    narr:`<strong>查表命中！</strong> <code>fn = sys_call_table[${A.nr}]</code> 取出函数指针 <span class="emph">${A.entryFn}</span>。这就是 sys_call_table 的核心作用：<span class="emph">用调用号当下标，O(1) 直接索引到入口函数</span>。`
+  },
+  { active:'efn', sctState:'hit', usePt:true, showFn:64,
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr)},
+    code:'cefn', term:null, dispatch:true, dispatchLine:3,
+    narr:`<strong>调用入口函数 <code>${A.entryFn}(regs)</code></strong>：它是个薄包装器，<span class="emph">从 pt_regs 里把 fd/buf/count 提取出来</span>（${A.ptreg}），还原成 C 函数的参数，再调用真正干活的 <code>ksys_write()</code>。`
+  },
+  { active:'ksys', sctState:'hit', usePt:true, showFn:64,
+    regs:{a0:'1',a1:buf,a2:'6',nr:String(A.nr)},
+    code:'cksys', term:'hello', dispatch:false,
+    narr:`<strong>进入内核核心 <code>ksys_write()</code></strong>：→ <code>vfs_write()</code> → <code>file->f_op->write_iter()</code> → tty 设备驱动，"hello" 真正写到终端。返回写入字节数 <span class="emph">6</span>。`
+  },
+  { active:'ret', sctState:'none',
+    regs:{a0:'6 (返回值)',a1:'—',a2:'—',nr:'—',retFlash:true},
+    code:'cret', term:'hello', dispatch:false,
+    narr:`<strong>返回用户态</strong>：内核把返回值 6 写回 <code>${A.a0}</code>，恢复用户态寄存器，执行 <code>${A.name==='ARM64'?'eret':'sysret'}</code>，CPU 切回 ring 3。`
+  },
+  { active:'user', sctState:'none',
+    regs:{a0:'6 (返回值)',a1:'—',a2:'—',nr:'—',retFlash:true},
+    code:'cuser', term:'hello', dispatch:false,
+    narr:`<strong>回到用户态</strong>：<code>write()</code> 返回 6，程序继续执行。一句 <code>write</code> 经历了：libc 装填寄存器 → <code>${A.instr}</code> 陷入 → <code>${A.entry}</code> 建 pt_regs → <span class="emph">sys_call_table[${A.nr}]</span> 查表 → ${A.entryFn} → ksys_write。`
+  },
+  ];
+}
+
+/* ============ 代码片段 ============ */
+function buildCode(A){
+  const P = A.name==='ARM64' ? '__arm64' : '__x64';
+  return {
+  clibc: A.name==='ARM64' ? [
+    `<span class="cmt">; libc write() 反汇编</span>`,
+    `mov  <span class="num">x8</span>, #0x40   <span class="cmt">; x8 = 64 调用号</span>`,
+    `svc  #0x0       <span class="cmt">; 触发系统调用</span>`,
+  ] : [
+    `<span class="cmt">; libc write() 反汇编</span>`,
+    `mov  <span class="num">eax</span>, 1    <span class="cmt">; rax = 1 调用号</span>`,
+    `syscall         <span class="cmt">; 触发系统调用</span>`,
+  ],
+  cuser: [
+    `<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">void</span>) {`,
+    `    <span class="fn">write</span>(<span class="num">1</span>, <span class="str">"hello\\n"</span>, <span class="num">6</span>);`,
+    `    <span class="kw">return</span> <span class="num">0</span>;`,
+    `}`,
+  ],
+  csvc: A.name==='ARM64' ? [
+    `<span class="cmt">; ${A.a0}=fd ${A.a1}=buf ${A.a2}=count</span>`,
+    `<span class="cmt">; x8=${A.nr} 调用号已就位</span>`,
+    `<span class="num">svc</span>  #0x0   <span class="cmt">; ← 用户态/内核态边界</span>`,
+  ] : [
+    `<span class="cmt">; rdi=fd rsi=buf rdx=count</span>`,
+    `<span class="cmt">; rax=${A.nr} 调用号已就位</span>`,
+    `<span class="num">syscall</span>      <span class="cmt">; ← 用户态/内核态边界</span>`,
+  ],
+  centry: [
+    `<span class="cmt">// ${A.entry} (汇编入口)</span>`,
+    `<span class="cmt">// 保存 x0~x30 等到内核栈</span>`,
+    `<span class="kw">struct</span> pt_regs *regs;  <span class="cmt">// 现场</span>`,
+    `  regs->regs[8] = <span class="num">${A.nr}</span>;  <span class="cmt">// 调用号</span>`,
+  ],
+  cdisp: [
+    `<span class="cmt">// 系统调用派发 (简化)</span>`,
+    `<span class="kw">long</span> nr = ${A.ptrnr};  <span class="cmt">// = ${A.nr}</span>`,
+    `syscall_fn_t fn = sys_call_table[nr];`,
+    `<span class="kw">return</span> <span class="fn">fn</span>(regs);`,
+  ],
+  cefn: [
+    `<span class="cmt">// ${A.entryFn} (SYSCALL_DEFINE3 展开)</span>`,
+    `<span class="kw">long</span> <span class="fn">${A.entryFn}</span>(<span class="kw">const struct</span> pt_regs *regs){`,
+    `  fd  = regs[0]; buf = regs[1];`,
+    `  cnt = regs[2];`,
+    `  <span class="kw">return</span> <span class="fn">ksys_write</span>(fd, buf, cnt);`,
+    `}`,
+  ],
+  cksys: [
+    `<span class="fn">ksys_write</span>(fd, buf, count)`,
+    `  → <span class="fn">vfs_write</span>(file, buf, count, &pos)`,
+    `    → file->f_op-><span class="fn">write_iter</span>(...)`,
+    `      → <span class="fn">tty_write</span>  <span class="cmt">// 终端设备</span>`,
+  ],
+  cret: [
+    `<span class="cmt">// 返回路径</span>`,
+    `regs->regs[0] = <span class="num">6</span>;  <span class="cmt">// 返回值 → ${A.a0}</span>`,
+    `<span class="cmt">// 恢复用户寄存器</span>`,
+    `<span class="num">${A.name==='ARM64'?'eret':'sysret'}</span>  <span class="cmt">; 切回用户态</span>`,
+  ],
+  };
+}
+
+/* ============ 状态 & 渲染 ============ */
+let arch = 'arm';
+let A, STEPS, CODE, FN;
+let currentStep = 0;
+let selectedIdx = 64;
+let fnExpanded = false;
+let autoTimer = null;
+
+function rebuild(){
+  A = {...ARCH[arch]};
+  A.ptrnr = arch==='arm' ? 'regs->regs[8]' : 'regs->orig_ax';
+  STEPS = buildSteps(A);
+  CODE = buildCode(A);
+  FN = fnDetails(A);
+}
+
+const $ = id => document.getElementById(id);
+
+function renderFlow(){
+  const s = STEPS[currentStep];
+  const activeIdx = STAGES.findIndex(st => st.id === s.active);
+  const html = STAGES.map((st, i) => {
+    let name = st.name
+      .replace('__INSTR__', A.instr)
+      .replace('__ENTRY__', A.entry)
+      .replace('__ENTRYFN__', A.entryFn);
+    let cls = 'stage';
+    if (st.id === s.active) cls += ' active';
+    else if (i < activeIdx) cls += ' done';
+    let boundaryHtml = st.boundary && st.id==='svc'
+      ? `<div class="boundary"><span>↑ 用户态　|　内核态 ↓</span></div>` : '';
+    let stageHtml = `<div class="${cls}">
+        <span class="zone ${st.zone}">${st.zone==='user'?'用户态':'内核态'}</span>
+        <div class="name">${name}</div>
+        <div class="desc">${st.desc}</div>
+      </div>`;
+    let arrowHtml = i < STAGES.length-1
+      ? `<div class="arrow ${i<activeIdx?'down-active':''}">↓</div>` : '';
+    return boundaryHtml + stageHtml + arrowHtml;
+  }).join('');
+  $('flow').innerHTML = html;
+  $('zoneTag').textContent = STAGES[activeIdx].zone==='user' ? '🟢 用户态' : '🟣 内核态';
+}
+
+function renderRegs(){
+  const s = STEPS[currentStep];
+  const r = s.regs;
+  const usePt = s.usePt;
+  $('regTitle').textContent = usePt ? 'struct pt_regs (内核栈)' : '寄存器现场';
+  $('regSub').textContent = usePt ? A.ptreg : A.note;
+  const defs = [
+    {k:'a0', rn: usePt?'regs[0]':A.a0, rd:'fd / 返回值'},
+    {k:'a1', rn: usePt?'regs[1]':A.a1, rd:'buf 地址'},
+    {k:'a2', rn: usePt?'regs[2]':A.a2, rd:'count'},
+    {k:'nr', rn: usePt?'regs[8]':A.nrReg, rd:'系统调用号', special:'nr'},
+  ];
+  if(arch==='x86'){
+    defs[0].rn = usePt?'regs->di':A.a0;
+    defs[1].rn = usePt?'regs->si':A.a1;
+    defs[2].rn = usePt?'regs->dx':A.a2;
+    defs[3].rn = usePt?'orig_ax':A.nrReg;
+  }
+  $('regs').innerHTML = defs.map(d => {
+    const val = r[d.k] ?? '—';
+    let cls = 'reg';
+    if (d.special==='nr') cls += ' nr';
+    if (d.k==='a0' && r.retFlash) cls += ' ret';
+    if (r.setAll) cls += ' set';
+    if (s.nrFlash && d.special==='nr') cls += ' set';
+    if (r.retFlash && d.k==='a0') cls = 'reg ret set';
+    const emptyCls = (val==='—') ? ' empty' : '';
+    return `<div class="${cls}">
+      <div class="rn">${d.rn}</div>
+      <div class="rv${emptyCls}">${val}</div>
+      <div class="rd">${d.rd}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderCode(){
+  const s = STEPS[currentStep];
+  const lines = CODE[s.code] || [];
+  $('codeDisplay').innerHTML = lines.map(l =>
+    `<span class="code-line">${l}</span>`).join('\n');
+}
+
+function renderTerm(){
+  const s = STEPS[currentStep];
+  if (s.term) {
+    $('term').innerHTML = `<span class="prompt">$ ./01_hello_write</span>\n<span class="out">${s.term}</span><span class="cursor"></span>`;
+  } else {
+    $('term').innerHTML = `<span class="prompt">$ ./01_hello_write</span><span class="cursor"></span>`;
+  }
+}
+
+function renderTable(){
+  const s = STEPS[currentStep];
+  const rows = tableRows(A);
+  $('sctArch').textContent = A.table;
+  const P = arch==='arm' ? '__arm64' : '__x64';
+  $('sct').innerHTML = rows.map(row => {
+    if (row.ellipsis) {
+      return `<div class="ellipsis">⋮ 其余数百个 (默认 sys_ni_syscall)</div>`;
+    }
+    const fn = row.fn.replace('__PFX__', P);
+    let cls = 'row';
+    let addr = '';
+    if (row.hit) {
+      if (s.sctState==='hit') cls += ' hit';
+      else if (s.sctState==='scan') cls += ' scan';
+      if ((s.sctState==='hit') && row.addr)
+        addr = `<div class="addr">@ 0x${row.addr}</div>`;
+    }
+    if (row.idx === selectedIdx && fnExpanded) cls += ' sel';
+    return `<div class="${cls}" data-idx="${row.idx}" data-fn="${fn}">
+      <div class="idx">[${row.idx}]</div>
+      <div class="ar">→</div>
+      <div class="fnname">${fn}</div>
+      ${addr}
+    </div>`;
+  }).join('');
+  // 注脚
+  $('sctNote').textContent = s.sctState==='hit'
+    ? `命中 [${A.nr}] → ${A.entryFn}` : '函数指针数组';
+}
+
+function renderDispatch(){
+  const s = STEPS[currentStep];
+  const eq = $('dispatchEq');
+  if (!s.dispatch) { eq.classList.add('dim'); }
+  else { eq.classList.remove('dim'); }
+  const ln = s.dispatchLine || 0;
+  eq.innerHTML = [
+    `<span class="${ln>=1?'':''}">nr = ${A.ptrnr};  <span class="nr">// = ${A.nr}</span></span>`,
+    `<span>fn = sys_call_table[<span class="nr">${ln>=2?A.nr:'nr'}</span>];${ln>=2?'  <span class="hl">→ '+A.entryFn+'</span>':''}</span>`,
+    `<span>ret = <span class="hl">${ln>=3?'fn(regs)':'fn(regs)'}</span>;${ln>=3?'  // 调用入口':''}</span>`,
+  ].join('<br>');
+}
+
+function renderFnDetail(){
+  const el = $('fnDetail');
+  // 折叠态：派发命中、真正调用入口函数前不展开
+  if (!fnExpanded) {
+    el.className = 'fn-detail collapsed';
+    el.innerHTML = `<div class="fd-collapsed">▸ 函数实现 · 派发调用入口函数时展开（或点击表项查看）</div>`;
+    return;
+  }
+  const d = FN[selectedIdx];
+  // 解析被选行的完整函数名
+  const rowEl = document.querySelector(`.row[data-idx="${selectedIdx}"]`);
+  const fname = rowEl ? rowEl.dataset.fn : '';
+  if (!d) {
+    el.className = 'fn-detail empty';
+    el.innerHTML = `<div class="fd-body">点击上方任意系统调用，查看它指向的内核函数实现</div>`;
+    return;
+  }
+  el.className = 'fn-detail show' + (d.main ? ' main' : '');
+  el.innerHTML = `
+    <div class="fd-head">
+      <span class="fd-slot">[${selectedIdx}]</span>
+      <span class="fd-name">${fname}</span>
+      <span class="fd-file">${d.file}</span>
+    </div>
+    <div class="fd-body">
+      <pre>${d.lines.join('\n')}</pre>
+      <div class="fd-chain">调用链：${d.chain}</div>
+    </div>`;
+}
+
+function drawConnector(){
+  const svg = $('connector');
+  const wrap = $('sctWrap');
+  const rowEl = document.querySelector(`.row[data-idx="${selectedIdx}"]`);
+  const det = $('fnDetail');
+  if (!fnExpanded || !rowEl || !det) { svg.innerHTML=''; return; }
+  const w = wrap.getBoundingClientRect();
+  const r = rowEl.getBoundingClientRect();
+  const dt = det.getBoundingClientRect();
+  const head = det.querySelector('.fd-head');
+  const headH = head ? head.getBoundingClientRect().height : 30;
+  // 坐标相对 sctWrap
+  const panelLeft = dt.left - w.left;       // 详情面板左边（与选中行左边对齐）
+  const y0 = r.top - w.top + r.height/2;    // 选中行竖直中心
+  const gx = 7;                             // 左侧沟槽走线（在 padding 内，避开方框）
+  const yMid = dt.top - w.top + headH/2;    // 详情面板表头竖直中线
+  const xTip = panelLeft + 7;               // 箭头探入表头内部一点
+  const path = `M ${panelLeft} ${y0} L ${gx} ${y0} L ${gx} ${yMid} L ${xTip} ${yMid}`;
+  const col = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  svg.innerHTML = `
+    <defs>
+      <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6 Z" fill="${col}"/>
+      </marker>
+    </defs>
+    <path d="${path}" fill="none" stroke="${col}" stroke-width="2"
+      stroke-dasharray="4 3" marker-end="url(#ah)" opacity="1"/>
+    <circle cx="${panelLeft}" cy="${y0}" r="2.8" fill="${col}"/>`;
+}
+
+function render(){
+  // 根据步骤决定是否展开函数实现：到“调用入口函数”那步才展开+高亮
+  const cur = STEPS[currentStep];
+  if (cur.showFn != null) { selectedIdx = cur.showFn; fnExpanded = true; }
+  else { fnExpanded = false; }
+  renderFlow();
+  renderRegs();
+  renderCode();
+  renderTerm();
+  renderTable();
+  renderDispatch();
+  renderFnDetail();
+  $('narration').innerHTML = STEPS[currentStep].narr;
+  $('stepNum').textContent = currentStep + 1;
+  $('stepTotal').textContent = STEPS.length;
+  $('prev').disabled = currentStep === 0;
+  $('next').disabled = currentStep === STEPS.length - 1;
+  requestAnimationFrame(drawConnector);
+}
+
+function next(){ if(currentStep<STEPS.length-1){currentStep++;render();} }
+function prev(){ if(currentStep>0){currentStep--;render();} }
+function reset(){ stopAuto(); currentStep=0; render(); }
+
+function switchArch(a){
+  if (a===arch) return;
+  arch = a;
+  $('archArm').classList.toggle('on', a==='arm');
+  $('archX86').classList.toggle('on', a==='x86');
+  rebuild();
+  currentStep = Math.min(currentStep, /*keep*/ 9);
+  render();
+}
+
+function startAuto(){
+  if(autoTimer) return;
+  $('auto').textContent='停止';
+  autoTimer = setInterval(()=>{
+    if(currentStep<STEPS.length-1) next();
+    else stopAuto();
+  }, 2500 - $('speed').value);
+}
+function stopAuto(){
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;$('auto').textContent='自动播放';}
+}
+function toggleAuto(){ autoTimer?stopAuto():startAuto(); }
+
+$('prev').addEventListener('click', prev);
+$('next').addEventListener('click', next);
+$('auto').addEventListener('click', toggleAuto);
+$('reset').addEventListener('click', reset);
+$('archArm').addEventListener('click', ()=>switchArch('arm'));
+$('archX86').addEventListener('click', ()=>switchArch('x86'));
+
+// 点击 sys_call_table 行 → 选中并显示函数实现
+$('sct').addEventListener('click', e=>{
+  const row = e.target.closest('.row');
+  if (!row || !row.dataset.idx) return;
+  const idx = Number(row.dataset.idx);
+  if (!FN[idx]) return;
+  selectedIdx = idx;
+  fnExpanded = true;
+  renderTable();
+  renderFnDetail();
+  requestAnimationFrame(drawConnector);
+});
+
+window.addEventListener('resize', ()=>requestAnimationFrame(drawConnector));
+document.addEventListener('keydown', e=>{
+  if(e.key==='ArrowRight'){next();e.preventDefault();}
+  if(e.key==='ArrowLeft'){prev();e.preventDefault();}
+  if(e.key===' '){toggleAuto();e.preventDefault();}
+});
+
+rebuild();
+render();
+</script>
+</body>
+</html>
