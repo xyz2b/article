@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一句 printf 怎么到屏幕 · 系统调用全景流水线</title>
+<style>
+  :root{
+    --bg:#0c1016; --panel:#141a22; --panel2:#1b232e; --border:#283039;
+    --text:#c9d1d9; --dim:#8b949e; --faint:#525a64;
+    --accent:#58a6ff; --hot:#f0883e; --add:#3fb950; --change:#bb8009;
+    --green:#238636; --yellow:#d29922; --red:#da3633; --purple:#bc8cff;
+    --user:#3fb950; --gate:#f0883e; --kernel:#bc8cff;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5;}
+  .wrap{max-width:1820px;margin:0 auto;padding:7px 16px 10px}
+  h1.t{font-size:15px;margin:0 0 1px;font-weight:700}
+  .sub{color:var(--dim);font-size:11px;margin:0 0 6px}
+  .sub code{font-family:var(--mono);color:var(--hot);background:var(--panel2);padding:0 4px;border-radius:4px}
+  .sub b{color:#fff}
+
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    padding:6px 12px;margin-bottom:6px;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;}
+  button{font:inherit;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:5px 11px;cursor:pointer;transition:.12s;}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:active:not(:disabled){transform:scale(.96)}
+  button:disabled{opacity:.35;cursor:default}
+  button.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .step-info{color:var(--dim);font-variant-numeric:tabular-nums;min-width:64px;text-align:center;margin-left:auto;font-size:12px}
+  input[type=range]{width:128px;accent-color:var(--accent)}
+  .jump{display:flex;gap:0;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+  .jump button{border:none;border-radius:0;padding:5px 10px;font-size:11px}
+  .jump button.z1.on{background:var(--user);color:#0c1016;font-weight:700}
+  .jump button.z2.on{background:var(--gate);color:#0c1016;font-weight:700}
+  .jump button.z3.on,.jump button.z4.on{background:var(--kernel);color:#0c1016;font-weight:700}
+
+  /* ===== 状态行：特权级 + 语言轨道并排 ===== */
+  .statusrow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:6px}
+  @media(max-width:1100px){.statusrow{grid-template-columns:1fr}}
+
+  /* ===== 特权级横幅 ===== */
+  .privbar{display:flex;align-items:stretch;gap:0;border-radius:9px;overflow:hidden;border:1px solid var(--border);font-family:var(--mono)}
+  .privbar .half{flex:1;padding:8px 14px;transition:.3s;display:flex;align-items:center;gap:10px}
+  .privbar .half .lvl{font-size:18px;font-weight:700}
+  .privbar .half .tag{font-size:11px;opacity:.85}
+  .privbar .u{background:rgba(63,185,80,.08);color:var(--faint)}
+  .privbar .k{background:rgba(188,140,255,.08);color:var(--faint);justify-content:flex-end}
+  .privbar .u.on{background:rgba(63,185,80,.22);color:var(--user);box-shadow:inset 0 0 0 2px var(--user)}
+  .privbar .k.on{background:rgba(188,140,255,.22);color:var(--kernel);box-shadow:inset 0 0 0 2px var(--kernel)}
+  .privbar .mid{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 15px;color:var(--faint);background:var(--panel2);font-family:var(--mono)}
+  .privbar .mid .ic{font-size:18px}
+  .privbar .mid .mt{font-size:9.5px;letter-spacing:.5px;margin-top:1px}
+  .privbar .mid.on{color:var(--hot);background:rgba(240,136,62,.14)}
+
+  /* ===== 语言/世界轨道（C ↔ 汇编 ↔ 硬件）===== */
+  .langtrack{display:flex;align-items:stretch;gap:0;flex-wrap:nowrap;overflow-x:auto;
+    background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:6px 11px}
+  .langtrack .ltlbl{font-size:10px;color:var(--faint);font-weight:700;letter-spacing:.4px;text-transform:uppercase;align-self:center;margin-right:10px;white-space:nowrap;flex:0 0 auto}
+  .lseg{display:flex;flex-direction:column;justify-content:center;border:1px solid var(--border);border-radius:7px;padding:4px 10px;background:var(--panel2);transition:.25s;opacity:.45;flex:0 0 auto}
+  .lseg .lt{font-family:var(--mono);font-size:12.5px;font-weight:700;line-height:1.25}
+  .lseg .ld{font-family:var(--mono);font-size:9px;color:var(--dim);line-height:1.3}
+  .lseg.c{--lc:#79c0ff} .lseg.asm{--lc:var(--hot)} .lseg.hw{--lc:var(--red)}
+  .lseg .lt{color:var(--lc)}
+  .lseg.on{opacity:1;border-color:var(--lc);box-shadow:0 0 0 1.5px var(--lc)}
+  .larrow{display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--faint);font-size:15px;padding:0 8px;flex:0 0 auto;transition:.2s}
+  .larrow.lit{color:var(--accent)}
+  .larrow.handoff .hl{font-family:var(--mono);font-size:8.5px;line-height:1.2;text-align:center;color:var(--faint);margin-top:1px;white-space:nowrap}
+  .larrow.handoff.lit .hl{color:var(--accent)}
+  .larrow.handoff.glow{color:var(--add)}
+  .larrow.handoff.glow .ha{font-size:19px;text-shadow:0 0 9px rgba(63,185,80,.85)}
+  .larrow.handoff.glow .hl{color:var(--add);font-weight:700}
+  .lreturn{font-family:var(--mono);font-size:11px;color:var(--user);font-weight:700;align-self:center;margin-left:11px;white-space:nowrap}
+
+  /* ===== 焦点条 ===== */
+  .focus-bar{display:flex;align-items:center;gap:13px;flex-wrap:wrap;
+    background:linear-gradient(90deg,rgba(240,136,62,.13),rgba(20,26,34,.4) 60%);
+    border:1px solid var(--border);border-left:4px solid var(--hot);border-radius:9px;
+    padding:7px 15px;margin-bottom:6px;min-height:44px;transition:.25s}
+  .focus-bar.user{border-left-color:var(--user);background:linear-gradient(90deg,rgba(63,185,80,.12),rgba(20,26,34,.4) 60%)}
+  .focus-bar.kernel{border-left-color:var(--kernel);background:linear-gradient(90deg,rgba(188,140,255,.12),rgba(20,26,34,.4) 60%)}
+  .focus-bar .flabel{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--hot);white-space:nowrap;flex:0 0 auto;display:flex;flex-direction:column;gap:1px}
+  .focus-bar.user .flabel{color:var(--user)} .focus-bar.kernel .flabel{color:var(--kernel)}
+  .focus-bar .flabel .ftag{font-size:9.5px;color:var(--faint);font-weight:600;letter-spacing:.4px}
+  .focus-bar .fchips{display:flex;gap:9px;flex-wrap:wrap;align-items:center;flex:1 1 auto}
+  .fchip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:13.5px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:4px 12px}
+  .fchip .fk{color:var(--accent);font-weight:700}
+  .fchip .fo{color:var(--faint);text-decoration:line-through;font-size:12px}
+  .fchip .far{color:var(--hot);font-weight:700;font-size:14px}
+  .fchip .fn2{color:#fff;font-weight:700}
+  .focus-bar .fnote{font-size:13px;color:var(--dim);font-style:italic}
+
+  /* ===== 流水线 ===== */
+  .pipe-wrap{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:8px 12px 10px;margin-bottom:6px;overflow-x:auto}
+  .pipe-hd{font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:7px;display:flex;align-items:center;gap:10px}
+  .pipe-hd .arch{color:var(--hot);text-transform:none;letter-spacing:0;font-family:var(--mono);font-size:11px}
+  .pipe{display:flex;align-items:stretch;gap:0;min-width:1560px}
+  .pcard{position:relative;flex:1 1 0;min-width:0;border:1.5px solid var(--border);border-radius:10px;
+    background:var(--panel2);padding:7px 10px 8px;transition:.25s;opacity:.5;display:flex;flex-direction:column}
+  .pcard.user{border-top:3px solid rgba(63,185,80,.4)}
+  .pcard.kernel{border-top:3px solid rgba(188,140,255,.4)}
+  .pcard.active{opacity:1;box-shadow:0 0 0 2px rgba(88,166,255,.3)}
+  .pcard.active.user{border-color:var(--user);box-shadow:0 0 0 2px rgba(63,185,80,.45)}
+  .pcard.active.kernel{border-color:var(--kernel);box-shadow:0 0 0 2px rgba(188,140,255,.45)}
+  .pcard.done{opacity:.82}
+  .pcard .phd{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pcard .phd .dot{width:7px;height:7px;border-radius:2px;flex:0 0 auto}
+  .pcard.user .phd .dot{background:var(--user)} .pcard.kernel .phd .dot{background:var(--kernel)}
+  .pcard .pbody{flex:1}
+  .payload{position:absolute;top:-13px;left:50%;transform:translateX(-50%);
+    font-family:var(--mono);font-size:11px;font-weight:700;white-space:nowrap;
+    background:var(--accent);color:#0c1016;padding:2px 11px;border-radius:10px;box-shadow:0 1px 6px rgba(0,0,0,.5);z-index:3}
+
+  .parrow{flex:0 0 28px;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:18px;font-weight:700}
+  .parrow.lit{color:var(--accent)}
+
+  /* svc 门（竖隔断）*/
+  .gate{flex:0 0 210px;display:flex;flex-direction:column;align-items:stretch;
+    margin:0 3px;border:1.5px dashed var(--gate);border-radius:10px;background:rgba(240,136,62,.06);
+    padding:10px 10px 10px;transition:.25s;opacity:.55;position:relative}
+  .gate.active{opacity:1;box-shadow:0 0 0 2px rgba(240,136,62,.45);background:rgba(240,136,62,.12)}
+  .gate.done{opacity:.8}
+  .gate .ghd{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--gate);text-align:center;margin-bottom:6px}
+  .gate .gbolt{text-align:center;font-size:18px;margin-bottom:5px;color:var(--faint);transition:.2s}
+  .gate.active .gbolt{color:var(--hot);text-shadow:0 0 8px rgba(240,136,62,.7)}
+  .gchk{display:flex;flex-direction:column;gap:2px}
+  .gci{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--faint);
+    padding:1px 5px;border-radius:4px;transition:.2s;line-height:1.25}
+  .gci .gn{width:14px;height:14px;border-radius:50%;flex:0 0 auto;border:1px solid var(--faint);
+    display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--faint)}
+  .gci.lit{color:#fff;background:rgba(240,136,62,.14)}
+  .gci.lit .gn{border-color:var(--hot);background:var(--hot);color:#0c1016;font-weight:700}
+  .gate .gfoot{margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.4;border-top:1px solid rgba(240,136,62,.25);padding-top:5px}
+  .gate .gfoot b{color:var(--hot)}
+
+  /* FILE 缓冲 */
+  .bufrow{display:flex;gap:4px;flex-wrap:wrap;min-height:30px;align-items:center;margin:5px 0}
+  .bch{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:28px;padding:0 6px;border-radius:5px;background:var(--panel);border:1px solid var(--border);font-family:var(--mono);font-size:14px;color:#fff}
+  .bch.nl{background:rgba(240,136,62,.2);color:var(--hot);border-color:rgba(240,136,62,.5);font-weight:700}
+  .bufempty{color:var(--faint);font-style:italic;font-size:12px}
+  .bsz{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  .bsz b{color:var(--hot)}
+  .bmode{margin-top:5px;font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.45}
+  .bmode .on{color:var(--user);font-weight:700}
+  .bnote{font-size:10.5px;color:var(--faint);line-height:1.45;margin-top:5px}
+
+  /* ABI 寄存器约定 */
+  .abigrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:3px}
+  .abireg{background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:5px 9px;transition:.2s}
+  .abireg .an{font-family:var(--mono);font-size:12.5px;color:var(--accent);font-weight:700;display:flex;justify-content:space-between}
+  .abireg .an .ad{font-size:9px;color:var(--faint);font-weight:400}
+  .abireg .av{font-family:var(--mono);font-size:14px;color:#fff;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .abireg.changed{border-color:var(--change);background:rgba(187,128,9,.16)}
+  .abireg.dim{opacity:.4}
+  .abireg .av.empty{color:var(--faint)}
+  .abikey .an{color:var(--hot)}
+  .abinote{font-size:10.5px;color:var(--faint);line-height:1.45;margin-top:6px}
+  .abinote b{color:var(--hot)}
+
+  /* pt_regs 槽位 */
+  .slots{display:flex;flex-direction:column;gap:2px}
+  .slot{display:grid;grid-template-columns:50px 1fr;gap:7px;align-items:center;
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:2px 8px;
+    font-family:var(--mono);font-size:11px;transition:.22s;opacity:.4}
+  .slot .so{color:var(--faint);font-size:9.5px}
+  .slot .sf{color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .slot .sv{color:var(--faint);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .slot.filled{opacity:1}
+  .slot.filled .sv{color:#fff}
+  .slot.hot{border-color:var(--hot);background:rgba(240,136,62,.13);box-shadow:0 0 0 1px rgba(240,136,62,.35);opacity:1}
+  .slot.hot .sf,.slot.hot .so{color:var(--hot);font-weight:700}
+  .slot.star{border-color:var(--kernel)}
+  .slot.star .sf{color:var(--kernel);font-weight:700}
+  .slot.retset{border-color:var(--add);background:rgba(63,185,80,.13);box-shadow:0 0 0 1px rgba(63,185,80,.4);opacity:1}
+  .slot.retset .sf,.slot.retset .sv{color:var(--add);font-weight:700}
+  .slot .sfrow{display:flex;flex-direction:row;justify-content:space-between;gap:7px;min-width:0;overflow:hidden}
+  .ptnote{font-size:10.5px;color:var(--faint);line-height:1.45;margin-top:5px}
+  .ptnote b{color:var(--kernel)}
+
+  /* sys_call_table */
+  .sct{display:flex;flex-direction:column;gap:2px}
+  .srow{display:grid;grid-template-columns:40px 13px 1fr;align-items:center;gap:6px;
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:2px 8px;transition:.2s;font-family:var(--mono);font-size:11px}
+  .srow .idx{color:var(--dim);text-align:right}
+  .srow .ar{color:var(--faint);font-size:9.5px}
+  .srow .fnname{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .srow.hit{border-color:var(--hot);background:rgba(240,136,62,.16);box-shadow:0 0 0 1px rgba(240,136,62,.4)}
+  .srow.hit .idx,.srow.hit .fnname{color:var(--hot);font-weight:700}
+  .sellipsis{text-align:center;color:var(--faint);font-family:var(--mono);font-size:9.5px}
+  .chain{margin-top:6px;border-top:1px solid var(--border);padding-top:5px}
+  .chain.hit{border-color:rgba(188,140,255,.4)}
+  .cstep{display:flex;justify-content:space-between;gap:7px;font-family:var(--mono);font-size:10.5px;line-height:1.5;white-space:nowrap;overflow:hidden;transition:.2s}
+  .cstep .cf{color:var(--faint);overflow:hidden;text-overflow:ellipsis}
+  .cstep .cn{color:transparent;font-size:9px;flex:0 0 auto}
+  .cstep.pend .cf{color:var(--faint);opacity:.6}
+  .cstep.done .cf{color:var(--kernel)}
+  .cstep.done .cn{color:var(--faint)}
+  .cstep.cur{background:rgba(240,136,62,.16);border-radius:4px;box-shadow:inset 2px 0 0 var(--hot);padding-left:5px;margin-left:-5px}
+  .cstep.cur .cf{color:var(--hot);font-weight:700}
+  .cstep.cur .cn{color:var(--hot)}
+
+  /* tty */
+  .ttybox{background:#05080c;border:1px solid var(--border);border-radius:8px;padding:11px 13px;font-family:var(--mono);font-size:17px;min-height:46px;display:flex;align-items:center}
+  .ttybox.empty{color:var(--faint);font-style:italic;font-size:12px}
+  .ttybox .prompt{color:var(--add);margin-right:7px}
+  .ttybox .out{color:#fff}
+  .ttybox .cursor{display:inline-block;width:9px;height:18px;background:var(--add);margin-left:4px;animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .ttynote{font-size:10.5px;color:var(--faint);line-height:1.45;margin-top:6px}
+
+  /* ===== 寄存器条（常驻） ===== */
+  .regbar{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:9px 12px 11px;margin-bottom:6px}
+  .regbar .rbhd{font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .regbar .rbhd .hint{text-transform:none;letter-spacing:0;color:var(--faint);font-size:10.5px;font-weight:400}
+  .regs{display:grid;grid-template-columns:repeat(10,1fr);gap:7px}
+  @media(max-width:1280px){.regs{grid-template-columns:repeat(5,1fr)}}
+  .regs.dim{opacity:.34}
+  .reg{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;transition:.22s}
+  .reg .rn{font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:700;display:flex;flex-direction:column}
+  .reg .rn .rd{font-size:9px;color:var(--faint);font-weight:400;margin-top:1px}
+  .reg .rv{font-family:var(--mono);font-size:14px;color:#fff;margin-top:3px;min-height:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .reg.changed{border-color:var(--change);box-shadow:0 0 0 1px var(--change);background:rgba(187,128,9,.14)}
+  .reg .rv.empty{color:var(--faint)}
+  .reg.sys .rn{color:var(--kernel)}
+  .reg.priv .rn{color:var(--hot)}
+  .reg.idle{opacity:.42}
+
+  /* ===== 底部：代码 + 旁白 ===== */
+  .btm{display:grid;grid-template-columns:minmax(380px,1fr) 1.25fr;gap:8px;align-items:stretch}
+  @media(max-width:1000px){.btm{grid-template-columns:1fr}.pipe{min-width:1280px}}
+  .code-display{background:#05080c;border:1px solid var(--border);border-radius:10px;padding:11px 14px}
+  .code-display .chd{font-size:10.5px;color:var(--faint);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:7px}
+  .code-display pre{margin:0;font-family:var(--mono);font-size:13.5px;line-height:1.75;color:var(--text);white-space:pre;overflow-x:auto}
+  .code-line{display:block;padding:1px 8px;border-radius:4px;transition:.2s}
+  .code-line.active{background:rgba(240,136,62,.16);box-shadow:inset 2px 0 0 var(--hot)}
+  .code-line .kw{color:#ff7b72}.code-line .reg2{color:#ffa657}.code-line .imm{color:#a5d6ff}
+  .code-line .op{color:#79c0ff}.code-line .cmt{color:var(--faint)}.code-line .fn{color:#d2a8ff}.code-line .str{color:#a5d6ff}
+
+  .narr{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 15px;display:flex;gap:13px;align-items:flex-start;max-height:172px;overflow-y:auto}
+  .narr .badge{flex:0 0 auto;font-family:var(--mono);font-size:12.5px;font-weight:700;padding:5px 12px;border-radius:6px;white-space:nowrap}
+  .narr .badge.user{background:rgba(63,185,80,.16);color:var(--user);border:1px solid var(--user)}
+  .narr .badge.gate{background:rgba(240,136,62,.18);color:var(--hot);border:1px solid var(--hot)}
+  .narr .badge.kernel{background:rgba(188,140,255,.16);color:var(--kernel);border:1px solid var(--kernel)}
+  .narr .text{font-size:14px;line-height:1.7}
+  .narr .text code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:13px}
+  .narr .text b{color:#fff}
+  .narr .text .x86{color:var(--dim);font-style:italic}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="t">一句 printf 怎么到屏幕 · 系统调用全景流水线</h1>
+  <p class="sub">一条不断的线，盯住 <code>write(1,"hello\n",6)</code> 一路下沉。下面这排<b>工位始终在屏上</b>：<b>FILE 缓冲</b> → <b>svc 寄存器约定</b> → <b>svc 硬件门</b>（跨特权边界）→ <b>pt_regs 存档</b> → <b>sys_call_table 派发</b> → <b>tty</b>。同一份数据（顶上的小标签）从左流到右，<b>下方寄存器条常驻</b>、变化高亮。（主轨道 ARM64 实测，旁白标 x86 差异。）</p>
+
+  <div class="controls">
+    <div class="jump" id="jump">
+      <button data-phase="buffer" class="z1 on">① 缓冲</button>
+      <button data-phase="gate" class="z2">② svc 门</button>
+      <button data-phase="ptregs" class="z3">③ pt_regs</button>
+      <button data-phase="table" class="z4">④ 派发</button>
+    </div>
+    <button id="reset">⏮ 重置</button>
+    <button id="prev">← 上一步</button>
+    <button id="next" class="primary">下一步 →</button>
+    <button id="auto">▶ 自动</button>
+    <label style="font-size:11px;color:var(--dim)">速度<input type="range" id="speed" min="350" max="2200" value="1150"></label>
+    <span class="step-info" id="counter">0 / 0</span>
+  </div>
+
+  <div class="statusrow">
+    <div class="privbar" id="privbar"></div>
+    <div class="langtrack" id="langtrack"></div>
+  </div>
+
+  <div class="focus-bar" id="focus-bar"></div>
+
+  <!-- 流水线 -->
+  <div class="pipe-wrap">
+    <div class="pipe-hd">全景流水线 · 工位常驻，数据从左流到右 <span class="arch">arm64</span></div>
+    <div class="pipe" id="pipe"></div>
+  </div>
+
+  <!-- 寄存器条 -->
+  <div class="regbar">
+    <div class="rbhd">CPU 寄存器 · 全程常驻 <span class="hint" id="reg-hint"></span></div>
+    <div class="regs" id="regs"></div>
+  </div>
+
+  <div class="btm">
+    <div class="code-display"><div class="chd" id="code-hd">当前执行</div><pre id="code"></pre></div>
+    <div class="narr">
+      <span class="badge user" id="badge">就绪</span>
+      <div class="text" id="narr-text">点「下一步」开始。这一页把分散在四篇里的关键节点连成一条不断的线：缓冲区怎么攒、<code>svc</code> 瞬间硬件做了什么、寄存器怎么变成内核栈上的 <code>pt_regs</code>、内核又怎么靠系统调用号查表找到 <code>ksys_write</code>。工位全程在屏，盯住同一份数据流动即可。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+
+/* ====================== 阶段元信息 ====================== */
+const PHASES={
+  buffer:{label:'libc 缓冲',zone:'user'},
+  gate:  {label:'svc 硬件门',zone:'gate'},
+  ptregs:{label:'pt_regs 存档',zone:'kernel'},
+  table: {label:'查表派发',zone:'kernel'},
+};
+
+/* ====================== 寄存器定义 ====================== */
+const REGDEFS=[
+  {k:'el',  cls:'priv',desc:'异常级别'},
+  {k:'pc',  cls:'',    desc:'下一条指令'},
+  {k:'sp',  cls:'',    desc:'栈指针'},
+  {k:'daif',cls:'priv',desc:'中断屏蔽'},
+  {k:'x8',  cls:'',    desc:'系统调用号'},
+  {k:'x0',  cls:'',    desc:'arg1/返回值'},
+  {k:'x1',  cls:'',    desc:'arg2 buf'},
+  {k:'x2',  cls:'',    desc:'arg3 count'},
+  {k:'elr', cls:'sys', desc:'ELR_EL1 返回址'},
+  {k:'esr', cls:'sys', desc:'ESR_EL1 异常因'},
+];
+const R0={el:'EL0',pc:'libc 内',sp:'用户栈',daif:'可中断',x8:'—',x0:'—',x1:'—',x2:'—',elr:'—',esr:'—'};
+
+/* ====================== 语言/世界轨道 ====================== */
+// 5 段：用户 C → libc 汇编 → svc 硬件 → 内核入口汇编 → 内核 C
+const LANGSEGS=[
+  {id:'cuser', kind:'c',  t:'用户 C',     d:'printf / libc'},
+  {id:'libasm',kind:'asm',t:'libc 汇编',  d:'mov x8 / svc'},
+  {id:'hw',    kind:'hw', t:'硬件',       d:'svc 原子动作'},
+  {id:'kasm',  kind:'asm',t:'内核入口汇编',d:'el0t_64_sync · 存 pt_regs'},
+  {id:'kc',    kind:'c',  t:'内核 C',     d:'do_el0_svc → ksys_write'},
+];
+// 每个 flow 当前处在哪一段
+const LANG_OF={
+  fmt:'cuser',buf:'cuser',flush:'cuser',
+  svc:'libasm',
+  hwA:'hw',hwB:'hw',hwC:'hw',
+  vec:'kasm',ctx:'kasm',save:'kasm',toC:'kasm',
+  disp:'kc',tbl:'kc',sw:'kc',ksys:'kc',vfs:'kc',tty:'kc',ret:'kc',
+  eret:'cuser', // 回程落回用户态
+};
+
+/* ====================== 代码块（按阶段切换） ====================== */
+const CODE={
+  buffer:{hd:'用户代码 + libc 缓冲', lines:[
+    {t:'<span class="fn">printf</span>(<span class="str">"hello\\n"</span>);  <span class="cmt">// 行缓冲</span>',i:0},
+    {t:'  <span class="cmt">└ vfprintf 格式化 → "hello\\n"</span>',i:1},
+    {t:'  <span class="cmt">└ 写入 stdout 的 FILE 缓冲区</span>',i:1},
+    {t:'  <span class="cmt">└ 末尾是 \\n？是 → 触发刷新</span>',i:2},
+    {t:'<span class="fn">write</span>(<span class="imm">1</span>, buf, <span class="imm">6</span>);  <span class="cmt">// 进 libc 包装</span>',i:2},
+  ]},
+  gate:{hd:'libc write() → svc（arm64）', lines:[
+    {t:'<span class="op">mov</span>  <span class="reg2">x8</span>, <span class="imm">#0x40</span>     <span class="cmt">; x8 = 64 = __NR_write</span>',i:3},
+    {t:'<span class="op">svc</span>  <span class="imm">#0x0</span>          <span class="cmt">; ← 跨过特权边界的那条</span>',i:4},
+    {t:'<span class="cmt">; ↓ 硬件原子地做 ①–⑦，不可打断</span>',i:5},
+    {t:'<span class="cmt">; PC ← VBAR_EL1 + 0x400</span>',i:6},
+    {t:'<span class="op">mov</span>  <span class="reg2">w0</span>, <span class="imm">#0x0</span>      <span class="cmt">; svc 返回后落这（pc+4）</span>',i:15},
+  ]},
+  ptregs:{hd:'内核入口汇编 el0t_64_sync', lines:[
+    {t:'<span class="op">sub</span>  <span class="reg2">sp</span>, <span class="reg2">sp</span>, <span class="imm">#PT_REGS_SIZE</span> <span class="cmt">; 预留</span>',i:8},
+    {t:'<span class="op">stp</span>  <span class="reg2">x0, x1</span>, [<span class="reg2">sp</span>]      <span class="cmt">; → regs[0..1]</span>',i:9},
+    {t:'<span class="op">stp</span>  <span class="reg2">x8, x9</span>, [<span class="reg2">sp</span>,<span class="imm">#16*4</span>]<span class="cmt">; x8 → regs[8]</span>',i:9},
+    {t:'<span class="op">msr</span>  <span class="reg2">sp_el0</span>, tsk            <span class="cmt">; 切 current</span>',i:8},
+    {t:'<span class="op">mov</span>  <span class="reg2">x0</span>, <span class="reg2">sp</span>; <span class="op">bl</span> <span class="fn">do_el0_svc</span> <span class="cmt">; x0=pt_regs*</span>',i:10},
+  ]},
+  table:{hd:'C 派发 do_el0_svc(regs)', lines:[
+    {t:'<span class="kw">long</span> nr = regs-><span class="reg2">regs[8]</span>;  <span class="cmt">// = 64</span>',i:11},
+    {t:'fn = <span class="fn">sys_call_table</span>[nr]; <span class="cmt">// 查表</span>',i:12},
+    {t:'ret = <span class="fn">fn</span>(regs);          <span class="cmt">// __arm64_sys_write</span>',i:12},
+    {t:'  └ <span class="fn">ksys_write</span>(fd,buf,count) → vfs_write → tty',i:13},
+    {t:'<span class="fn">syscall_set_return_value</span>(regs, <span class="imm">6</span>); <span class="cmt">// regs[0]=6</span>',i:14},
+  ]},
+};
+
+/* ====================== 步骤（16 步全景） ====================== */
+const m=o=>Object.assign({},R0,o);
+const STEPS=[
+ // —— libc 缓冲 ——
+ {flow:'fmt',zone:'user',el:'EL0',phase:'buffer',libc:true,badge:'用户态 · libc',codeI:0,changed:[],
+  regs:m({pc:'vfprintf'}), buf:{chars:[],size:0}, mode:'line', pay:'"hello\\n" 格式化',
+  narr:'<code>printf("hello\\n")</code> 进 libc 的 <code>vfprintf</code>，把格式串拼成最终字节 <b>"hello\\n"</b>（6 字节）。此刻还<b>没有</b>任何系统调用——一切都在用户态的 C 代码里。下方寄存器条先压暗：系统调用的寄存器约定还没轮到。'},
+
+ {flow:'buf',zone:'user',el:'EL0',phase:'buffer',libc:true,badge:'用户态 · 写缓冲',codeI:1,changed:[],
+  regs:m({pc:'_IO_xsputn'}), buf:{chars:['h','e','l','l','o','\n'],size:6}, mode:'line', pay:'"hello\\n" · 6B',
+  narr:'6 个字节写进 <code>stdout</code> 的 <code>FILE</code> 缓冲区，<code>_IO_write_ptr += 6</code>。<b>stdout 连终端时是行缓冲</b>：数据先攒着，不会每个字符都陷内核。这正是第一篇的核心——<code>printf ≠ write</code>，中间隔了一层缓冲。'},
+
+ {flow:'flush',zone:'user',el:'EL0',phase:'buffer',libc:true,badge:'用户态 · 刷新',codeI:2,changed:['x0','x1','x2'],
+  regs:m({pc:'__libc_write',x0:'1',x1:'buf 地址',x2:'6'}), buf:{chars:[],size:0,flushing:true}, mode:'line', pay:'write(1,buf,6)',
+  narr:'缓冲区末尾是 <code>\\n</code> → <b>行缓冲触发刷新</b>。libc 调用 <code>write(1, buf, 6)</code>，把攒下的 6 字节一次性交给内核。参数就位：<code>fd=1</code>、<code>buf</code>、<code>count=6</code>。数据到此离开缓冲区，下沉去敲那道硬件门。'},
+
+ // —— svc 硬件门 ——
+ {flow:'svc',zone:'user',el:'EL0',phase:'gate',badge:'用户态 · 摆寄存器',codeI:0,changed:['x8','pc'],
+  regs:m({pc:'0x400658',x8:'64',x0:'1',x1:'buf',x2:'6'}), pay:'x8=64 + args 就位',
+  narr:'进了 libc 的 <code>write</code> 汇编：<code>mov x8, #0x40</code> 把系统调用号 <b>64</b> 放进 <code>x8</code>（注意立即数 <code>#0</code> 内核不看，号在 x8）。<code>x0/x1/x2</code> 已是 fd/buf/count。下一条就是 <code>svc</code>。此刻仍在 <b style="color:var(--user)">EL0</b>，碰不到内核一个字节。'},
+
+ {flow:'hwA',zone:'gate',el:'EL1',phase:'gate',badge:'svc · ①提权 ②③存现场',codeI:1,changed:['el','elr'],
+  regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',x1:'buf',x2:'6',elr:'0x40065c'}), pay:'跨门中 ①②③',
+  narr:'<code>svc</code> 执行的<b>原子瞬间</b>，硬件接管：<b>①</b> 特权级 <b style="color:var(--user)">EL0</b>→<b style="color:var(--kernel)">EL1</b>；<b>②</b> <code>ELR_EL1 ← 返回地址</code>（svc 下一条）；<b>③</b> <code>SPSR_EL1 ← PSTATE</code>。返回地址与状态得先冻起来，否则 <code>eret</code> 无家可归。<span class="x86">x86 的 syscall 则塞进 RCX/R11 通用寄存器。</span>'},
+
+ {flow:'hwB',zone:'gate',el:'EL1',phase:'gate',badge:'svc · ④关中断 ⑤ESR ⑥换栈',codeI:2,changed:['daif','esr','sp'],
+  regs:m({el:'EL1',pc:'0x400658',x8:'64',x0:'1',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}), pay:'跨门中 ④⑤⑥',
+  narr:'<b>④</b> <code>DAIF</code> 置位关中断（栈还没搭稳，不能被打断）；<b>⑤</b> <code>ESR_EL1.EC=0x15</code> 写明"这是一条 SVC"，内核入口靠它区分系统调用/缺页；<b>⑥</b> <code>SP</code> 硬件自动切到内核栈 <code>SP_EL1</code>。<span class="x86">x86 的 syscall 偏偏不换栈——得入口汇编自己 movq 换。</span>'},
+
+ {flow:'hwC',zone:'gate',el:'EL1',phase:'gate',vec:true,badge:'svc · ⑦跳转 PC',codeI:3,changed:['pc'],
+  regs:m({el:'EL1',pc:'VBAR_EL1+0x400',x8:'64',x0:'1',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}), pay:'PC←VBAR+0x400',
+  narr:'<b>⑦</b> <code>PC ← VBAR_EL1 + 0x400</code>。落点不是用户挑的——是内核启动时写死在 <code>VBAR_EL1</code> 的向量表基址，加上"64 位用户态来的同步异常"这个架构固定偏移 <b>0x400</b>。门牌号锁在用户态读都读不到的寄存器里，这就是安全的根。'},
+
+ {flow:'vec',zone:'kernel',el:'EL1',phase:'gate',vec:true,badge:'落地 · el0t_64_sync',codeI:3,changed:['pc'],
+  regs:m({el:'EL1',pc:'el0t_64_sync',x8:'64',x0:'1',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}), pay:'落 el0t_64_sync',
+  narr:'CPU 落在 <code>vectors + 0x400</code> 这一格，里头一条 <code>b</code> 跳到真正的处理入口 <code>el0t_64_sync</code>——一段<b>汇编</b>。第二篇把 CPU 送到了门口；门后那段汇编怎么收拾"半成品"现场，是第三篇的事。'},
+
+ // —— pt_regs 存档 ——
+ {flow:'ctx',zone:'kernel',el:'EL1',phase:'ptregs',badge:'切 sp_el0 = current',codeI:3,changed:[],
+  regs:m({el:'EL1',pc:'kernel_entry',x8:'64',x0:'1',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  fill:[], pay:'切 current',
+  narr:'进门第一脚很"裸"：特权级是 EL1 了，但 <code>sp_el0</code> 还指着<b>用户栈</b>，内核连"当前任务是谁"都问不对。汇编先 <code>msr sp_el0, tsk</code> 把它换成当前 <code>task_struct</code>（current）——之后所有 <code>current->...</code> 才指得对。<span class="x86">x86 用一条 swapgs 干等价的事。</span>'},
+
+ {flow:'save',zone:'kernel',el:'EL1',phase:'ptregs',badge:'stp 存 pt_regs',codeI:1,changed:[],
+  regs:m({el:'EL1',pc:'stp …',x8:'64',x0:'1',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  fill:['r0','r1','r2','r3_7','r8','r9_29','r30','sp','pc','pstate'], hotSlots:['r0','r1','r2','r8'], pay:'存 31 个寄存器',
+  narr:'一串 <code>stp</code>（一次存两个）把 31 个用户态通用寄存器整整齐齐压进内核栈，拼成 <code>struct pt_regs</code>。<b>下标和寄存器号严丝合缝</b>：<code>x0→regs[0]</code>、<code>x8→regs[8]</code>。<code>regs[8]=64</code> 就是系统调用号落地的地方——下一篇查表读的就是它。'},
+
+ {flow:'toC',zone:'kernel',el:'EL1',phase:'ptregs',badge:'x0=pt_regs* → C',codeI:4,changed:['x0'],
+  regs:m({el:'EL1',pc:'bl do_el0_svc',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  fill:['r0','r1','r2','r3_7','r8','r9_29','r30','sp','pc','pstate'], hotSlots:['r8'], pay:'x0=&pt_regs → C',
+  narr:'<code>mov x0, sp</code> 把内核栈顶（= <code>pt_regs</code> 起始地址）装进第一个参数寄存器 <code>x0</code>，<code>bl do_el0_svc</code>——<b>从这条起就是 C 的世界</b>。<code>pt_regs</code> 就是这道边界上的"标准交接表格"：内核不信任用户寄存器，必须先冻结存档，再交给 C。'},
+
+ // —— 查表派发 ——
+ {flow:'disp',zone:'kernel',el:'EL1',phase:'table',badge:'读号 nr = regs[8] = 64',codeI:0,changed:[],
+  regs:m({el:'EL1',pc:'do_el0_svc',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  pay:'nr = 64',
+  narr:'<code>do_el0_svc(regs)</code> 接过指针，<code>nr = regs->regs[8]</code> 读出系统调用号 <b>64</b>——正是汇编用 <code>stp</code> 存进去的那个 x8。一个用裸偏移（bpftrace 读 <code>arg0+64</code>），一个用结构体成员名，是同一个东西。号有了，接下来查表。'},
+
+ {flow:'tbl',zone:'kernel',el:'EL1',phase:'table',badge:'sys_call_table[64]',codeI:1,changed:[],
+  regs:m({el:'EL1',pc:'fn(regs)',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  tableHit:true, pay:'查表 → __arm64_sys_write',
+  narr:'<code>fn = sys_call_table[64]</code>——这是个函数指针数组，<b>第 64 项</b>指向 <code>__arm64_sys_write</code>。一次数组索引就完成了"号→函数"的路由，<code>fn(regs)</code> 调进去。<span class="x86">x86 上 write 的号是 1，查 __x64_sys_write，机制一模一样。</span>'},
+
+ {flow:'sw',zone:'kernel',el:'EL1',phase:'table',badge:'进 __arm64_sys_write 包装器',codeI:2,changed:[],
+  regs:m({el:'EL1',pc:'__arm64_sys_write',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  tableHit:true,chainTo:0, pay:'解出 fd/buf/count',
+  narr:'<code>fn(regs)</code> 调进 <code>__arm64_sys_write</code>——它只是个<b>包装器</b>：从 <code>pt_regs</code> 里把 <code>regs[0]/regs[1]/regs[2]</code> 解成 <code>fd=1 / buf / count=6</code> 这三个真正的 C 参数，再往下调。还没真写，只是拆包。'},
+
+ {flow:'ksys',zone:'kernel',el:'EL1',phase:'table',badge:'ksys_write 真正干活',codeI:3,changed:[],
+  regs:m({el:'EL1',pc:'ksys_write',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  tableHit:true,chainTo:1, pay:'fd → struct file',
+  narr:'<code>ksys_write(fd, buf, count)</code> 是<b>真正干活</b>的那层：用 <code>fd=1</code> 在进程的打开文件表里查出对应的 <code>struct file *</code>，做好权限/位置检查，再交给 VFS。'},
+
+ {flow:'vfs',zone:'kernel',el:'EL1',phase:'table',badge:'vfs_write · VFS 抽象层',codeI:3,changed:[],
+  regs:m({el:'EL1',pc:'vfs_write',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  tableHit:true,chainTo:2, pay:'f_op->write_iter',
+  narr:'<code>vfs_write</code> 是<b>虚拟文件系统</b>层：它不关心后面是磁盘文件、管道还是终端，只通过 <code>file->f_op->write_iter</code> 这张函数表把请求派给具体设备的写实现。fd=1 连的是终端，于是落到 tty。',
+  term:''},
+
+ {flow:'tty',zone:'kernel',el:'EL1',phase:'table',badge:'tty_write · 6 字节落终端',codeI:3,changed:[],
+  regs:m({el:'EL1',pc:'tty_write',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  tableHit:true,chainTo:3, pay:'写入 /dev/pts/0',
+  narr:'链条最深处 <code>tty_write</code>：<b>"hello\\n" 这 6 个字节真正被写进终端设备</b> <code>/dev/pts/0</code>，屏幕这才出字。到这一步，从 <code>printf</code> 出发的数据终于抵达硬件输出端。',
+  term:'hello'},
+
+ {flow:'ret',zone:'kernel',el:'EL1',phase:'table',badge:'回填 regs[0] = 6',codeI:4,changed:[],
+  regs:m({el:'EL1',pc:'syscall_set_ret',x8:'64',x0:'&pt_regs',x1:'buf',x2:'6',elr:'0x40065c',daif:'已屏蔽 ●',esr:'EC=0x15',sp:'SP_EL1 内核栈'}),
+  tableHit:true,chainTo:3,retset:true, pay:'ret = 6 回填',
+  narr:'一路 <code>return</code> 回到 C 派发处，<code>syscall_set_return_value()</code> 把返回值 <b>6</b>（写出的字节数）写回 <code>pt_regs->regs[0]</code>。注意：进来时 <code>regs[0]</code> 是参数 fd=1，出去时变成返回值 6——<b>参数和返回值共用同一个槽位</b>，这正是寄存器调用约定的设计。',
+  term:'hello'},
+
+ // —— 返回 ——
+ {flow:'eret',zone:'user',el:'EL0',phase:'table',badge:'eret · 回到用户态',codeI:4,changed:['el','pc','sp','daif','x0'],
+  regs:m({el:'EL0',pc:'0x40065c',sp:'用户栈',daif:'可中断',x8:'64',x0:'6',x1:'buf',x2:'6',elr:'(已用)',esr:'—'}),
+  tableHit:true,chainTo:3,retset:true, pay:'x0=6 回 EL0',
+  narr:'<code>eret</code> 是进入的镜像：从 <code>ELR_EL1</code>/<code>SPSR_EL1</code> 恢复返回地址与状态、特权级切回 <b style="color:var(--user)">EL0</b>、<code>SP</code> 换回用户栈。落回 <code>svc</code> 的下一条，<code>x0=6</code>。<b>整趟 EL0→门→内核→eret 的旅程，从用户态看就是 pc+4、x0 从 1 变 6——和一次普通函数调用几乎没区别。</b> 全景到此闭环。',
+  term:'hello'},
+];
+
+/* ====================== pt_regs 槽位 ====================== */
+const SLOTS=[
+  {id:'r0',   off:'+0x00', field:'regs[0]',  val:'x0 = fd 1'},
+  {id:'r1',   off:'+0x08', field:'regs[1]',  val:'x1 = buf'},
+  {id:'r2',   off:'+0x10', field:'regs[2]',  val:'x2 = count 6'},
+  {id:'r3_7', off:'+0x18', field:'regs[3..7]',val:'x3 … x7'},
+  {id:'r8',   off:'+0x40', field:'regs[8]',  val:'x8 = nr 64', star:true},
+  {id:'r9_29',off:'+0x48', field:'regs[9..29]',val:'x9 … x29'},
+  {id:'r30',  off:'+0xF0', field:'regs[30]', val:'x30 = lr'},
+  {id:'sp',   off:'+0xF8', field:'sp',       val:'user sp_el0'},
+  {id:'pc',   off:'+0x100',field:'pc',       val:'ELR_EL1 返回址'},
+  {id:'pstate',off:'+0x108',field:'pstate',  val:'SPSR_EL1 状态'},
+];
+const ALL_SLOTS=SLOTS.map(s=>s.id);
+
+/* ====================== sys_call_table 行 / 调用链 ====================== */
+const SCT=[
+  {idx:56,fn:'__arm64_sys_openat'},
+  {idx:57,fn:'__arm64_sys_close'},
+  {ell:true},
+  {idx:63,fn:'__arm64_sys_read'},
+  {idx:64,fn:'__arm64_sys_write',hit:true},
+  {ell:true},
+  {idx:93,fn:'__arm64_sys_exit'},
+];
+const CHAIN=[
+  {fn:'__arm64_sys_write',note:'包装器·拆 pt_regs'},
+  {fn:'ksys_write',note:'fd→struct file'},
+  {fn:'vfs_write',note:'VFS·f_op'},
+  {fn:'tty_write',note:'写 /dev/pts/0'},
+];
+
+/* ====================== svc 门 7 件原子动作 ====================== */
+const GATE_ITEMS=[
+  'EL0 → EL1 提权',
+  'ELR_EL1 ← 返回址',
+  'SPSR_EL1 ← PSTATE',
+  'DAIF 关中断',
+  'ESR_EL1.EC = 0x15',
+  'SP → SP_EL1 内核栈',
+  'PC ← VBAR_EL1+0x400',
+];
+function gateLit(flow){
+  if(['fmt','buf','flush','svc'].includes(flow)) return 0;
+  if(flow==='hwA') return 3;
+  if(flow==='hwB') return 6;
+  return 7; // hwC, vec, 及之后所有内核阶段
+}
+
+/* ====================== 工位状态推断 ====================== */
+// 工位序号：0 缓冲 / 1 ABI / 2 门 / 3 pt_regs / 4 表 / 5 tty
+const STATION_OF={
+  fmt:0,buf:0,flush:0,
+  svc:1,
+  hwA:2,hwB:2,hwC:2,vec:2,
+  ctx:3,save:3,toC:3,
+  disp:4,tbl:4,sw:4,ksys:4,vfs:4,tty:4,ret:4,
+  eret:5,
+};
+function stationStates(s){
+  const cs=STATION_OF[s.flow];
+  const st=[];
+  for(let i=0;i<6;i++){
+    if(i===5){
+      st[i]=(s.flow==='tty'||s.flow==='eret')?'active':(s.term?'done':'upcoming');
+    } else {
+      st[i]= i<cs?'done': i===cs?'active':'upcoming';
+    }
+  }
+  return st;
+}
+
+/* ====================== 渲染：顶部条 ====================== */
+let cur=0, timer=null, autoOn=false;
+
+function langtrackHTML(s){
+  const segOrder=LANGSEGS.map(x=>x.id);
+  const curSeg=LANG_OF[s.flow];
+  const curIdx=segOrder.indexOf(curSeg);
+  const isReturn=(s.flow==='eret');
+  const reached=isReturn?segOrder.length-1:curIdx;
+  let html=`<span class="ltlbl">代码在哪个世界</span>`;
+  LANGSEGS.forEach((seg,i)=>{
+    const on=(!isReturn&&i===curIdx);
+    html+=`<div class="lseg ${seg.kind}${on?' on':''}">
+      <span class="lt">${seg.t}</span><span class="ld">${seg.d}</span></div>`;
+    if(i<LANGSEGS.length-1){
+      const handoff=(seg.id==='kasm');   // kasm → kc：bl do_el0_svc，汇编交棒给 C
+      const lit=i<reached;
+      const glow=handoff&&(s.flow==='toC');
+      if(handoff){
+        html+=`<div class="larrow handoff${lit?' lit':''}${glow?' glow':''}">
+          <span class="ha">⇒</span><span class="hl">bl do_el0_svc<br>x0=pt_regs*</span></div>`;
+      } else {
+        html+=`<div class="larrow${lit?' lit':''}">→</div>`;
+      }
+    }
+  });
+  if(isReturn) html+=`<span class="lreturn">↩ eret 回到用户 C</span>`;
+  return html;
+}
+
+function privbarHTML(s){
+  const uOn=s.zone==='user'?' on':'';
+  const kOn=(s.zone==='gate'||s.zone==='kernel')?' on':'';
+  const gateOn=s.zone==='gate';
+  return `<div class="half u${uOn}"><div class="lvl">EL0</div><div class="tag">用户态 · 受限</div></div>
+    <div class="mid${gateOn?' on':''}"><div class="ic">${gateOn?'⚡':'▶'}</div><div class="mt">svc 门</div></div>
+    <div class="half k${kOn}"><div class="tag">内核态 · 全权</div><div class="lvl">EL1</div></div>`;
+}
+
+function focusHTML(s){
+  const chg=s.changed||[];
+  const prev=cur>0?STEPS[cur-1].regs:R0;
+  let chips='';
+  if(chg.length){
+    chips=chg.map(k=>{
+      const o=prev[k], n=s.regs[k];
+      return `<span class="fchip"><span class="fk">${k.toUpperCase()}</span>
+        <span class="fo">${o==null?'—':o}</span><span class="far">→</span>
+        <span class="fn2">${n==null?'—':n}</span></span>`;
+    }).join('');
+  } else {
+    chips=`<span class="fnote">本步无寄存器写入 · 看流水线工位与结构变化</span>`;
+  }
+  return `<div class="flabel"><span class="ftag">本步焦点 · ${PHASES[s.phase].label}</span>${s.badge}</div>
+    <div class="fchips">${chips}</div>`;
+}
+
+function regsHTML(s){
+  const chg=s.changed||[];
+  const any=chg.length>0;
+  return REGDEFS.map(r=>{
+    const v=s.regs[r.k];
+    const isChg=chg.includes(r.k);
+    const empty=(v==='—'||v==null)?' empty':'';
+    const idle=(any&&!isChg)?' idle':'';
+    return `<div class="reg ${r.cls}${isChg?' changed':''}${idle}">
+      <div class="rn">${r.k.toUpperCase()}<span class="rd">${r.desc}</span></div>
+      <div class="rv${empty}">${v==null?'—':v}</div></div>`;
+  }).join('');
+}
+
+function codeHTML(s){
+  const c=CODE[s.phase];
+  $('code-hd').textContent=c.hd;
+  return c.lines.map(l=>{
+    const on=(l.i===s.codeI)?' active':'';
+    return `<span class="code-line${on}">${l.t}</span>`;
+  }).join('');
+}
+
+/* ====================== 渲染：流水线工位 ====================== */
+function payloadTag(s,state){
+  return state==='active'&&s.pay ? `<div class="payload">${s.pay}</div>` : '';
+}
+
+function stBuffer(s,state){
+  // active: 用当前 buf；done: 已刷出；（缓冲是首工位，无 upcoming）
+  let chars, size, flushing, note;
+  if(state==='active'){
+    const b=s.buf||{chars:[],size:0};
+    chars=b.chars; size=b.size; flushing=b.flushing;
+  } else { // done
+    chars=[]; size=0; flushing=true;
+  }
+  const cells = chars.length
+    ? chars.map(c=>`<span class="bch${c==='\n'?' nl':''}">${c==='\n'?'\\n':c}</span>`).join('')
+    : `<span class="bufempty">${flushing?'[已刷出 → write(1,buf,6)]':'[空]'}</span>`;
+  return `<div class="bsz">FILE·stdout 缓冲 <b>${size}</b>/4096 字节</div>
+    <div class="bufrow">${cells}</div>
+    <div class="bmode"><span class="${s.mode==='line'?'on':''}">●行缓冲（终端 stdout）</span> · 遇 \\n 刷新</div>
+    <div class="bnote">printf 先攒在这层 libc 缓冲，<b>不是</b>每字符都陷内核。</div>`;
+}
+
+function stAbi(s,state){
+  const defs=[
+    {k:'x8',d:'系统调用号',cls:'abikey'},
+    {k:'x0',d:'arg1 fd',cls:''},
+    {k:'x1',d:'arg2 buf',cls:''},
+    {k:'x2',d:'arg3 count',cls:''},
+  ];
+  const chg=s.changed||[];
+  const grid=defs.map(d=>{
+    const v=s.regs[d.k];
+    const empty=(v==='—'||v==null);
+    const dim=empty?' dim':'';
+    const changed=(state==='active'&&chg.includes(d.k))?' changed':'';
+    return `<div class="abireg ${d.cls}${dim}${changed}">
+      <div class="an">${d.k.toUpperCase()}<span class="ad">${d.d}</span></div>
+      <div class="av${empty?' empty':''}">${empty?'—':v}</div></div>`;
+  }).join('');
+  return `<div class="abigrid">${grid}</div>
+    <div class="abinote">号在 <b>x8</b>，<code style="font-family:var(--mono)">svc #0</code> 的立即数内核<b>不看</b>。x0/x1/x2 即 write 的三个参数。</div>`;
+}
+
+function stGate(s,state){
+  const lit=gateLit(s.flow);
+  const items=GATE_ITEMS.map((t,i)=>{
+    const on=i<lit;
+    return `<div class="gci${on?' lit':''}"><span class="gn">${on?'✓':i+1}</span>${t}</div>`;
+  }).join('');
+  return `<div class="gate ${state}">
+    ${state==='active'&&s.pay?`<div class="payload">${s.pay}</div>`:''}
+    <div class="ghd">svc 硬件门</div>
+    <div class="gbolt">⚡</div>
+    <div class="gchk">${items}</div>
+    <div class="gfoot">原子完成 <b>${lit}/7</b> · 落点 <b>VBAR_EL1+0x400</b> → el0t_64_sync</div>
+  </div>`;
+}
+
+function stPtregs(s,state){
+  let fill,hot;
+  if(state==='upcoming'){fill=[];hot=[];}
+  else if(state==='active'){fill=s.fill||[];hot=s.hotSlots||[];}
+  else {fill=ALL_SLOTS;hot=[];}
+  const rows=SLOTS.map(sl=>{
+    const f=fill.includes(sl.id);
+    const h=hot.includes(sl.id);
+    const cls=(f?' filled':'')+(h?' hot':'')+(sl.star?' star':'');
+    return `<div class="slot${cls}"><span class="so">${sl.off}</span>
+      <div class="sfrow"><span class="sf">${sl.field}</span><span class="sv">${f?sl.val:'…'}</span></div></div>`;
+  }).join('');
+  return `<div class="slots">${rows}</div>
+    <div class="ptnote"><code style="font-family:var(--mono)">stp</code> 把 xN 存到偏移 N×8，<b>regs[8]=64</b> 即系统调用号。</div>`;
+}
+
+function stTable(s,state){
+  const hit = (state!=='upcoming') && s.tableHit;
+  const rows=SCT.map(r=>{
+    if(r.ell) return `<div class="sellipsis">⋮</div>`;
+    const h=r.hit&&hit;
+    return `<div class="srow${h?' hit':''}"><span class="idx">[${r.idx}]</span><span class="ar">→</span>
+      <span class="fnname">${r.fn}</span></div>`;
+  }).join('');
+  const frontier = (state==='upcoming') ? -1
+                 : (s.chainTo==null ? -1 : s.chainTo);
+  const chainStarted = frontier>=0;
+  const chainRows=CHAIN.map((c,i)=>{
+    const cls = i<frontier ? 'done' : i===frontier ? 'cur' : 'pend';
+    return `<div class="cstep ${cls}"><span class="cf">${i>0?'└ ':''}${c.fn}</span><span class="cn">${c.note}</span></div>`;
+  }).join('');
+  return `<div class="sct">${rows}</div>
+    <div class="chain${chainStarted?' hit':''}">${chainRows}</div>`;
+}
+
+function stTty(s,state){
+  if(s.term){
+    return `<div class="ttybox"><span class="prompt">$</span><span class="out">${s.term}</span><span class="cursor"></span></div>
+      <div class="ttynote">ksys_write→vfs_write→tty_write，6 字节落到 <b style="color:var(--kernel)">/dev/pts/0</b>。</div>`;
+  }
+  return `<div class="ttybox empty">（write 还没落到 tty）</div>
+    <div class="ttynote">等内核把 6 字节写进终端设备。</div>`;
+}
+
+function pipelineHTML(s){
+  const st=stationStates(s);
+  const card=(idx,title,zone,body)=>
+    `<div class="pcard ${zone} ${st[idx]}">${payloadTag(s,st[idx])}
+      <div class="phd"><span class="dot"></span>${title}</div>
+      <div class="pbody">${body}</div></div>`;
+  const arrow=(after)=>{ // 箭头在工位 after 完成后点亮
+    const lit = STATION_OF[s.flow] > after || (after===4 && s.term);
+    return `<div class="parrow${lit?' lit':''}">→</div>`;
+  };
+  return [
+    card(0,'① FILE 缓冲','user', stBuffer(s,st[0])),
+    arrow(0),
+    card(1,'② svc 寄存器约定','user', stAbi(s,st[1])),
+    stGate(s,st[2]),
+    card(3,'③ struct pt_regs','kernel', stPtregs(s,st[3])),
+    arrow(3),
+    card(4,'④ sys_call_table','kernel', stTable(s,st[4])),
+    arrow(4),
+    card(5,'⑤ tty 终端','kernel', stTty(s,st[5])),
+  ].join('');
+}
+
+/* ====================== 主渲染 ====================== */
+function render(){
+  const s=STEPS[cur];
+  $('privbar').innerHTML=privbarHTML(s);
+  $('langtrack').innerHTML=langtrackHTML(s);
+  const fb=$('focus-bar');
+  fb.className='focus-bar '+(s.zone==='user'?'user':s.zone==='kernel'?'kernel':'');
+  fb.innerHTML=focusHTML(s);
+  $('pipe').innerHTML=pipelineHTML(s);
+  const regsEl=$('regs');
+  regsEl.className='regs'+(s.libc?' dim':'');
+  regsEl.innerHTML=regsHTML(s);
+  $('reg-hint').textContent = s.libc ? '· libc 阶段：系统调用寄存器约定尚未摆好，先压暗' : '· EL/PC/SP/DAIF 是特权与控制，x8/x0–x2 是 ABI，ELR/ESR 是门保存的现场';
+  $('code').innerHTML=codeHTML(s);
+  const b=$('badge'); b.textContent=s.badge; b.className='badge '+s.zone;
+  $('narr-text').innerHTML=s.narr;
+  $('counter').textContent=(cur+1)+' / '+STEPS.length;
+  $('prev').disabled=cur===0;
+  $('next').disabled=cur===STEPS.length-1;
+  document.querySelectorAll('#jump button').forEach(btn=>{
+    btn.classList.toggle('on',btn.dataset.phase===s.phase);
+  });
+}
+
+function go(n){cur=Math.max(0,Math.min(STEPS.length-1,n));render();}
+function stopAuto(){autoOn=false;clearTimeout(timer);$('auto').textContent='▶ 自动';$('auto').classList.remove('primary');}
+function jumpToPhase(phase){
+  stopAuto();
+  const idx=STEPS.findIndex(s=>s.phase===phase);
+  if(idx>=0) go(idx);
+}
+
+$('next').onclick=()=>go(cur+1);
+$('prev').onclick=()=>go(cur-1);
+$('reset').onclick=()=>{stopAuto();go(0);};
+document.querySelectorAll('#jump button').forEach(btn=>{
+  btn.onclick=()=>jumpToPhase(btn.dataset.phase);
+});
+$('auto').onclick=()=>{
+  if(autoOn){stopAuto();return;}
+  autoOn=true;$('auto').textContent='⏸ 暂停';$('auto').classList.add('primary');
+  (function loop(){if(!autoOn)return;if(cur>=STEPS.length-1){stopAuto();return;}go(cur+1);timer=setTimeout(loop,+$('speed').value);})();
+};
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'){go(cur+1);e.preventDefault();}
+  if(e.key==='ArrowLeft'){go(cur-1);e.preventDefault();}
+  if(e.key===' '){$('auto').click();e.preventDefault();}
+});
+render();
+</script>
+</body>
+</html>

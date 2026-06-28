@@ -2,6 +2,11 @@
 
 ---
 
+> **🗺️ 全流程全景可视化**：[→ syscall-panorama-visualizer.html](https://xyz2b.github.io/article/CodeAdventure/front/syscall-panorama-visualizer.html)
+> 把本系列四篇串成一条流水线，盯住 `write(1,"hello\n",6)` 一路下沉：**libc 缓冲**攒够数据 → **`svc` 硬件门**跨过特权边界 → **内核入口汇编**保存现场建 `pt_regs` → **`sys_call_table`** 查表派发到 `ksys_write`，再一路 `__arm64_sys_write → ksys_write → vfs_write → tty_write` 把字节写到终端。六个工位全程在屏、寄存器条常驻，还标出代码在「用户 C / libc 汇编 / 硬件 / 内核汇编 / 内核 C」之间的切换，以及 `bl do_el0_svc` 那一步汇编把 `pt_regs` 交给 C 的交接点。建议先扫一遍全景，再看每篇细节。
+
+---
+
 > **🎯 交互式可视化**：[→ syscall-entry-visualizer.html](https://xyz2b.github.io/article/CodeAdventure/front/syscall-entry-visualizer.html)
 > `svc` / `syscall` 指令落地后，内核入口那段汇编怎么一步步建好现场：切换 per-CPU 指针、把寄存器全压进 `struct pt_regs`、再跳进 C 函数 `do_el0_svc()` 的全过程动画。可切 ARM64 / x86-64 两条路对照，逐步看 CPU 寄存器变化与内核栈上 `pt_regs` 一格格填满。
 
