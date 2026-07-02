@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="700" viewBox="0 0 980 700" role="img" aria-labelledby="title desc">
+  <title id="title">x86-64 长模式 TSS 的主要字段</title>
+  <desc id="desc">长模式 TSS 不再用于硬件任务切换，主要保存 RSP0、RSP1、RSP2、IST1 到 IST7 以及 I/O permission bitmap offset。</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; filter: url(#shadow); }
+      .field { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+      .hot { fill: #ecfdf5; stroke: #34d399; stroke-width: 2; }
+      .ist { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2; }
+      .io { fill: #fff7ed; stroke: #f59e0b; stroke-width: 2; }
+      .title { fill: #0f172a; font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #334155; font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #334155; font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { fill: #475569; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { fill: #0f172a; font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .mono-strong { fill: #0f172a; font: 700 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .green { fill: #047857; }
+      .blue { fill: #1d4ed8; }
+      .orange { fill: #b45309; }
+      .muted { fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="980" height="700"/>
+  <text class="title" x="42" y="54">长模式 TSS：任务切换退场，换栈信息留下</text>
+
+  <rect class="panel" x="72" y="92" width="382" height="548" rx="8"/>
+  <text class="label" x="104" y="130">64 位 TSS 的硬件可见字段</text>
+  <text class="small muted" x="104" y="154">示意，不按字节比例绘制</text>
+
+  <rect class="field" x="104" y="178" width="316" height="42" rx="4"/>
+  <text class="mono" x="126" y="205">reserved</text>
+
+  <rect class="hot" x="104" y="220" width="316" height="50" rx="4"/>
+  <text class="mono-strong green" x="126" y="251">RSP0</text>
+  <text class="small green" x="198" y="251">Ring 3 -> Ring 0 时的栈顶</text>
+
+  <rect class="field" x="104" y="270" width="316" height="42" rx="4"/>
+  <text class="mono" x="126" y="296">RSP1</text>
+
+  <rect class="field" x="104" y="312" width="316" height="42" rx="4"/>
+  <text class="mono" x="126" y="338">RSP2</text>
+
+  <rect class="ist" x="104" y="374" width="316" height="50" rx="4"/>
+  <text class="mono-strong blue" x="126" y="405">IST1</text>
+  <text class="small blue" x="198" y="405">专用中断/异常栈</text>
+
+  <rect class="ist" x="104" y="424" width="316" height="50" rx="4"/>
+  <text class="mono-strong blue" x="126" y="455">IST2</text>
+  <text class="small blue" x="198" y="455">例如 NMI / #DF 等路径</text>
+
+  <rect class="ist" x="104" y="474" width="316" height="46" rx="4"/>
+  <text class="mono" x="126" y="503">...</text>
+
+  <rect class="ist" x="104" y="520" width="316" height="50" rx="4"/>
+  <text class="mono-strong blue" x="126" y="551">IST7</text>
+
+  <rect class="io" x="104" y="590" width="316" height="34" rx="4"/>
+  <text class="mono-strong orange" x="126" y="612">I/O bitmap offset</text>
+
+  <rect class="panel" x="542" y="144" width="352" height="156" rx="8"/>
+  <text class="label" x="574" y="184">中断从用户态进内核</text>
+  <text class="text" x="574" y="222">CPU 发现 CPL 3 -> 0</text>
+  <text class="text" x="574" y="250">自动从 TSS.RSP0 取新 RSP</text>
+  <text class="text" x="574" y="278">再把旧 SS/RSP/RFLAGS/CS/RIP 压栈</text>
+
+  <path d="M420 245 C478 245, 496 220, 542 220" fill="none" stroke="#059669" stroke-width="2.2" marker-end="url(#arrow-green)"/>
+
+  <rect class="panel" x="542" y="368" width="352" height="146" rx="8"/>
+  <text class="label" x="574" y="408">需要专用栈的异常</text>
+  <text class="text" x="574" y="446">IDT 门描述符里可写 IST 编号</text>
+  <text class="text" x="574" y="474">CPU 用 TSS.IST[n] 换到专用栈</text>
+
+  <path d="M420 450 C476 450, 496 438, 542 438" fill="none" stroke="#2563eb" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+
+  <text class="small muted" x="548" y="588">没有 EIP/CR3/通用寄存器保存区；</text>
+  <text class="small muted" x="548" y="614">现代 Linux 不靠 TSS 做硬件任务切换。</text>
+</svg>

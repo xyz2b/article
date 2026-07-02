@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="720" viewBox="0 0 1040 720" role="img" aria-labelledby="title desc">
+  <title id="title">x86-64 Linux 中 swapgs 进入和退出内核的流程</title>
+  <desc id="desc">用户态 GS base 和内核 GS base 分别保存在 IA32_GS_BASE 与 IA32_KERNEL_GS_BASE。进入内核时 swapgs 交换两者，内核用 GS 访问 per-CPU 数据；返回用户态前再次 swapgs 恢复用户 GS。</desc>
+  <defs>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; filter: url(#shadow); }
+      .user { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2; }
+      .kernel { fill: #ecfdf5; stroke: #34d399; stroke-width: 2; }
+      .msr { fill: #fff7ed; stroke: #f59e0b; stroke-width: 2; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+      .title { fill: #0f172a; font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #334155; font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #334155; font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { fill: #475569; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { fill: #0f172a; font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .mono-strong { fill: #0f172a; font: 700 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .blue { fill: #1d4ed8; }
+      .green { fill: #047857; }
+      .orange { fill: #b45309; }
+      .muted { fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1040" height="720"/>
+  <text class="title" x="42" y="54">swapgs：把用户 GS 和内核 GS 对调</text>
+
+  <rect class="panel" x="54" y="92" width="420" height="218" rx="8"/>
+  <text class="label" x="84" y="130">1. 用户态执行时</text>
+  <rect class="user" x="84" y="156" width="350" height="46" rx="6"/>
+  <text class="mono-strong blue" x="106" y="185">IA32_GS_BASE = 用户 GS base</text>
+  <rect class="msr" x="84" y="214" width="350" height="46" rx="6"/>
+  <text class="mono-strong orange" x="106" y="243">KERNEL_GS_BASE = 内核 per-CPU base</text>
+  <text class="small muted" x="84" y="286">用户态通常很少用 GS；Linux 内核把备用 MSR 准备成内核 GS。</text>
+
+  <rect class="panel" x="566" y="92" width="420" height="218" rx="8"/>
+  <text class="label" x="596" y="130">2. 入口执行 swapgs 后</text>
+  <rect class="kernel" x="596" y="156" width="350" height="46" rx="6"/>
+  <text class="mono-strong green" x="618" y="185">IA32_GS_BASE = 内核 per-CPU base</text>
+  <rect class="msr" x="596" y="214" width="350" height="46" rx="6"/>
+  <text class="mono-strong orange" x="618" y="243">KERNEL_GS_BASE = 用户 GS base</text>
+  <text class="small muted" x="596" y="286">现在内核指令里的 gs:offset 会落到当前 CPU 的数据区。</text>
+
+  <path d="M474 196 C508 196, 526 196, 566 196" fill="none" stroke="#d97706" stroke-width="2.2" marker-end="url(#arrow-orange)"/>
+  <rect x="486" y="166" width="68" height="28" rx="5" fill="#fff7ed" stroke="#f59e0b"/>
+  <text class="mono-strong orange" x="499" y="185">swapgs</text>
+
+  <rect class="panel" x="88" y="386" width="864" height="196" rx="8"/>
+  <text class="label" x="118" y="424">内核态用 GS 访问 per-CPU 数据</text>
+
+  <rect class="kernel" x="124" y="456" width="230" height="86" rx="6"/>
+  <text class="mono-strong green" x="148" y="486">gs:offset</text>
+  <text class="small" x="148" y="516">同一条指令</text>
+
+  <path d="M354 499 C400 499, 416 499, 462 499" fill="none" stroke="#059669" stroke-width="2.2" marker-end="url(#arrow-green)"/>
+
+  <rect class="box" x="462" y="442" width="206" height="114" rx="6"/>
+  <text class="label" x="492" y="474">CPU0 per-CPU</text>
+  <text class="mono" x="492" y="506">current</text>
+  <text class="mono" x="492" y="530">runqueue</text>
+
+  <rect class="box" x="700" y="442" width="206" height="114" rx="6"/>
+  <text class="label" x="730" y="474">CPU1 per-CPU</text>
+  <text class="mono" x="730" y="506">current</text>
+  <text class="mono" x="730" y="530">runqueue</text>
+
+  <path d="M560 556 C560 616, 480 626, 386 626 C306 626, 208 616, 184 552" fill="none" stroke="#2563eb" stroke-width="1.9" marker-end="url(#arrow-blue)"/>
+  <text class="small blue" x="360" y="650">返回用户态前再 swapgs，把用户 GS base 换回 IA32_GS_BASE</text>
+</svg>
