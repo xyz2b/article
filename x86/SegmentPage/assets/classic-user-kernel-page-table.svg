@@ -48,7 +48,7 @@
 
   <path class="arrow" d="M440 238 C494 206, 574 206, 640 238"/>
   <path class="arrow" d="M640 250 C574 282, 494 282, 440 250"/>
-  <text class="text" x="452" y="312">内核映射在各进程页表中重复出现，通常指向同一批物理内核页</text>
+  <text class="text" x="300" y="512">内核映射在各进程页表中重复出现，通常指向同一批物理内核页</text>
 
   <rect class="note" x="118" y="526" width="844" height="48" rx="6"/>
   <text class="text" x="150" y="556">用户态运行时虽然页表里能“看见”内核虚拟地址范围，但 PTE.U/S=0，正常权限检查会禁止 Ring 3 访问。</text>
