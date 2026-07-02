@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="620" viewBox="0 0 1080 620" role="img" aria-labelledby="title desc">
+  <title id="title">x86-64 四级页表项结构对比</title>
+  <desc id="desc">PML4E、PDPTE、PDE、PTE 都是 64 位页表项。PML4E 指向 PDPT，普通 PDPTE 指向 PD，普通 PDE 指向 PT，最终 PTE 指向 4KB 物理页；PDPTE 和 PDE 设置 PS 位时可直接映射大页。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { fill: #0f172a; font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #334155; font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #475569; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { fill: #0f172a; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .row { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+      .flag { fill: #eff6ff; stroke: #93c5fd; stroke-width: 1.5; }
+      .addr { fill: #ecfdf5; stroke: #86efac; stroke-width: 1.5; }
+      .large { fill: #fff7ed; stroke: #f59e0b; stroke-width: 1.5; }
+      .nx { fill: #fee2e2; stroke: #fca5a5; stroke-width: 1.5; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1080" height="620"/>
+  <text class="title" x="44" y="54">PML4E / PDPTE / PDE / PTE：同样 64 位，含义随层级变化</text>
+
+  <text class="label" x="54" y="102">页表项</text>
+  <text class="label" x="172" y="102">bit 63</text>
+  <text class="label" x="270" y="102">bit 51:12 附近</text>
+  <text class="label" x="598" y="102">低位标志</text>
+  <text class="label" x="812" y="102">这一项指向什么</text>
+
+  <rect class="row" x="44" y="122" width="992" height="84" rx="8"/>
+  <text class="mono" x="66" y="170">PML4E</text>
+  <rect class="nx" x="150" y="144" width="86" height="36" rx="5"/>
+  <text class="mono" x="181" y="166">NX</text>
+  <rect class="addr" x="260" y="144" width="280" height="36" rx="5"/>
+  <text class="mono" x="316" y="166">PDPT 物理页基址</text>
+  <rect class="flag" x="576" y="144" width="174" height="36" rx="5"/>
+  <text class="mono" x="596" y="166">P/RW/US/PWT/PCD/A</text>
+  <text class="text" x="812" y="157">下一层 PDPT</text>
+  <text class="text" x="812" y="180">没有 PS 大页位</text>
+
+  <rect class="row" x="44" y="224" width="992" height="84" rx="8"/>
+  <text class="mono" x="66" y="272">PDPTE</text>
+  <rect class="nx" x="150" y="246" width="86" height="36" rx="5"/>
+  <text class="mono" x="181" y="268">NX</text>
+  <rect class="addr" x="260" y="246" width="280" height="36" rx="5"/>
+  <text class="mono" x="330" y="268">PD 物理页基址</text>
+  <rect class="flag" x="576" y="246" width="174" height="36" rx="5"/>
+  <text class="mono" x="596" y="268">P/RW/US/A/PS</text>
+  <text class="text" x="812" y="259">PS=0：下一层 PD</text>
+  <text class="text" x="812" y="282">PS=1：直接映射 1GB 页</text>
+
+  <rect class="row" x="44" y="326" width="992" height="84" rx="8"/>
+  <text class="mono" x="66" y="374">PDE</text>
+  <rect class="nx" x="150" y="348" width="86" height="36" rx="5"/>
+  <text class="mono" x="181" y="370">NX</text>
+  <rect class="addr" x="260" y="348" width="280" height="36" rx="5"/>
+  <text class="mono" x="332" y="370">PT 物理页基址</text>
+  <rect class="flag" x="576" y="348" width="174" height="36" rx="5"/>
+  <text class="mono" x="596" y="370">P/RW/US/A/PS</text>
+  <text class="text" x="812" y="361">PS=0：下一层 PT</text>
+  <text class="text" x="812" y="384">PS=1：直接映射 2MB 页</text>
+
+  <rect class="row" x="44" y="428" width="992" height="84" rx="8"/>
+  <text class="mono" x="66" y="476">PTE</text>
+  <rect class="nx" x="150" y="450" width="86" height="36" rx="5"/>
+  <text class="mono" x="181" y="472">NX</text>
+  <rect class="addr" x="260" y="450" width="280" height="36" rx="5"/>
+  <text class="mono" x="328" y="472">4KB 物理页框号</text>
+  <rect class="flag" x="576" y="450" width="174" height="36" rx="5"/>
+  <text class="mono" x="596" y="472">P/RW/US/A/D/G</text>
+  <text class="text" x="812" y="463">最终数据页</text>
+  <text class="text" x="812" y="486">不会再指向下一级表</text>
+
+  <rect class="large" x="96" y="548" width="888" height="38" rx="6"/>
+  <text class="text" x="126" y="572">共同点：都是 64 位，P=0 时这条路径无效；RW/US/NX 等权限会沿 page walk 累积检查，任何一级不允许都会导致访问失败。</text>
+</svg>

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="650" viewBox="0 0 1080 650" role="img" aria-labelledby="title desc">
+  <title id="title">KPTI 双页表与 CR3 切换</title>
+  <desc id="desc">KPTI 把用户态 CR3 指向的页表和内核态 CR3 指向的页表分开，用户页表只保留极少入口跳板，进入内核后切换到完整内核页表。</desc>
+  <defs>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { fill: #0f172a; font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #334155; font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #475569; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { fill: #0f172a; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .user { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2; }
+      .kernel { fill: #ecfdf5; stroke: #34d399; stroke-width: 2; }
+      .minimal { fill: #fff7ed; stroke: #f59e0b; stroke-width: 2; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+      .arrow { fill: none; stroke: #2563eb; stroke-width: 2.2; marker-end: url(#arrow-blue); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1080" height="650"/>
+  <text class="title" x="44" y="54">KPTI：用户态和内核态不再共用完整页表</text>
+
+  <rect class="box" x="72" y="94" width="420" height="424" rx="8"/>
+  <text class="label" x="104" y="132">用户态 CR3</text>
+  <rect class="user" x="104" y="160" width="330" height="88" rx="6"/>
+  <text class="mono" x="132" y="194">用户代码 / 堆 / 栈 / 共享库</text>
+  <text class="text" x="132" y="222">U/S=1，用户态可访问</text>
+  <rect class="minimal" x="104" y="276" width="330" height="88" rx="6"/>
+  <text class="mono" x="132" y="310">极少量内核入口 trampoline</text>
+  <text class="text" x="132" y="338">用于进内核后切到内核 CR3</text>
+  <rect class="box" x="104" y="392" width="330" height="72" rx="6"/>
+  <text class="mono" x="132" y="425">大部分内核映射：不存在</text>
+  <text class="text" x="132" y="448">Meltdown 不能从用户页表侧信道读取完整内核</text>
+
+  <rect class="box" x="588" y="94" width="420" height="424" rx="8"/>
+  <text class="label" x="620" y="132">内核态 CR3</text>
+  <rect class="user" x="620" y="160" width="330" height="88" rx="6"/>
+  <text class="mono" x="648" y="194">当前进程用户映射</text>
+  <text class="text" x="648" y="222">内核需要 copy_from_user 等访问路径</text>
+  <rect class="kernel" x="620" y="276" width="330" height="88" rx="6"/>
+  <text class="mono" x="648" y="310">完整内核 text/data/per-cpu/vmalloc</text>
+  <text class="text" x="648" y="338">U/S=0，只能 supervisor 访问</text>
+  <rect class="kernel" x="620" y="392" width="330" height="72" rx="6"/>
+  <text class="mono" x="648" y="425">全局映射 / fixmap / direct map</text>
+  <text class="text" x="648" y="448">是否保留在 TLB 受 global/PCID 影响</text>
+
+  <path class="arrow" d="M492 266 C534 266, 546 266, 588 266"/>
+  <text class="mono" x="540" y="232" text-anchor="middle">入口</text>
+  <text class="text" x="540" y="250" text-anchor="middle">中断/异常</text>
+  <text class="text" x="540" y="292" text-anchor="middle">写 CR3</text>
+  <text class="text" x="540" y="310" text-anchor="middle">切内核页表</text>
+
+  <path class="arrow" d="M588 496 C536 584, 210 584, 170 518"/>
+  <text class="mono" x="398" y="602">返回用户态前</text>
+  <text class="text" x="504" y="602">再写 CR3：切回用户页表</text>
+</svg>

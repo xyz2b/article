@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="560" viewBox="0 0 1080 560" role="img" aria-labelledby="title desc">
+  <title id="title">x86-64 4KB 页 PTE 位域</title>
+  <desc id="desc">64 位页表项包含 present、read write、user supervisor、cache、accessed、dirty、global、物理页框号和 NX 等字段。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { fill: #0f172a; font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #334155; font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #475569; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { fill: #0f172a; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .bit { stroke: #94a3b8; stroke-width: 1.5; }
+      .flag { fill: #eff6ff; }
+      .addr { fill: #ecfdf5; }
+      .avail { fill: #f8fafc; }
+      .nx { fill: #fee2e2; }
+      .note { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1080" height="560"/>
+  <text class="title" x="44" y="54">PTE：64 位页表项里真正放了什么</text>
+
+  <text class="mono" x="54" y="104">63</text>
+  <rect class="bit nx" x="78" y="82" width="72" height="58" rx="5"/>
+  <text class="label" x="101" y="108">NX</text>
+  <text class="text" x="93" y="130">不可执行</text>
+
+  <text class="mono" x="176" y="104">62:52</text>
+  <rect class="bit avail" x="226" y="82" width="118" height="58" rx="5"/>
+  <text class="label" x="252" y="108">可用/扩展</text>
+  <text class="text" x="252" y="130">随 CPU 而变</text>
+
+  <text class="mono" x="366" y="104">51:12</text>
+  <rect class="bit addr" x="426" y="82" width="354" height="58" rx="5"/>
+  <text class="label" x="544" y="108">物理页框号</text>
+  <text class="text" x="500" y="130">4KB 对齐，所以低 12 位不需要存在这里</text>
+
+  <text class="mono" x="804" y="104">11:0</text>
+  <rect class="bit flag" x="850" y="82" width="178" height="58" rx="5"/>
+  <text class="label" x="892" y="108">标志位</text>
+  <text class="text" x="880" y="130">权限、缓存、访问状态</text>
+
+  <rect class="note" x="54" y="192" width="972" height="232" rx="8"/>
+  <text class="label" x="86" y="226">低 12 位常见字段</text>
+  <text class="mono" x="86" y="260">bit 0  P     present，页是否有效</text>
+  <text class="mono" x="86" y="288">bit 1  R/W   0=只读，1=可写</text>
+  <text class="mono" x="86" y="316">bit 2  U/S   0=supervisor，1=user 可访问</text>
+  <text class="mono" x="86" y="344">bit 3  PWT   page-level write-through</text>
+  <text class="mono" x="86" y="372">bit 4  PCD   page-level cache disable</text>
+  <text class="mono" x="548" y="260">bit 5  A     accessed，硬件置位</text>
+  <text class="mono" x="548" y="288">bit 6  D     dirty，写入时硬件置位</text>
+  <text class="mono" x="548" y="316">bit 7  PS/PAT 在上级项中 PS=大页；PTE 中常作 PAT</text>
+  <text class="mono" x="548" y="344">bit 8  G     global，CR3 reload 可保留</text>
+  <text class="mono" x="548" y="372">bit 9-11 OS  操作系统自用</text>
+
+  <text class="text" x="86" y="466">PML4E/PDPTE/PDE/PTE 都是 64 位项，低位权限字段大体相似；PDE/PDPTE 的 PS=1 时可以直接映射 2MB/1GB 大页。</text>
+  <text class="text" x="86" y="492">图里按 4KB 普通页的最终 PTE 讲；真实可用的物理地址位数由 CPUID 报告，本机容器里是 40 位。</text>
+</svg>

@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="680" viewBox="0 0 1080 680" role="img" aria-labelledby="title desc">
+  <title id="title">x86-64 四级页表硬件 page walk</title>
+  <desc id="desc">48 位线性地址被拆成 PML4、PDPT、PD、PT 四个 9 位下标和 12 位页内偏移，CR3 指向 PML4 物理页，MMU 逐级读取页表项，最后得到物理页框并加上偏移。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { fill: #0f172a; font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #334155; font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #475569; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { fill: #0f172a; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+      .cpu { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2; }
+      .table { fill: #ecfdf5; stroke: #34d399; stroke-width: 2; }
+      .entry { fill: #dcfce7; stroke: #22c55e; stroke-width: 1.5; }
+      .offset { fill: #fff7ed; stroke: #f59e0b; stroke-width: 2; }
+      .arrow { fill: none; stroke: #2563eb; stroke-width: 2.2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1080" height="680"/>
+  <text class="title" x="44" y="54">CR3 到物理地址：一次 4 级 page walk</text>
+
+  <rect class="box" x="54" y="88" width="972" height="92" rx="8"/>
+  <text class="label" x="82" y="122">48 位线性地址拆分</text>
+  <rect class="cpu" x="82" y="138" width="150" height="30" rx="5"/>
+  <text class="mono" x="103" y="158">PML4[47:39]</text>
+  <rect class="cpu" x="244" y="138" width="150" height="30" rx="5"/>
+  <text class="mono" x="269" y="158">PDPT[38:30]</text>
+  <rect class="cpu" x="406" y="138" width="150" height="30" rx="5"/>
+  <text class="mono" x="438" y="158">PD[29:21]</text>
+  <rect class="cpu" x="568" y="138" width="150" height="30" rx="5"/>
+  <text class="mono" x="598" y="158">PT[20:12]</text>
+  <rect class="offset" x="730" y="138" width="150" height="30" rx="5"/>
+  <text class="mono" x="762" y="158">offset[11:0]</text>
+  <text class="text" x="894" y="158">每个下标 9 位，正好索引 512 个 8 字节表项</text>
+
+  <rect class="cpu" x="68" y="246" width="136" height="64" rx="8"/>
+  <text class="label" x="102" y="275">CR3</text>
+  <text class="mono" x="88" y="297">PML4 phys base</text>
+
+  <rect class="table" x="270" y="226" width="126" height="104" rx="8"/>
+  <text class="label" x="310" y="254">PML4</text>
+  <rect class="entry" x="288" y="278" width="90" height="24" rx="4"/>
+  <text class="mono" x="304" y="295">PML4E</text>
+
+  <rect class="table" x="470" y="226" width="126" height="104" rx="8"/>
+  <text class="label" x="510" y="254">PDPT</text>
+  <rect class="entry" x="488" y="278" width="90" height="24" rx="4"/>
+  <text class="mono" x="508" y="295">PDPTE</text>
+
+  <rect class="table" x="670" y="226" width="126" height="104" rx="8"/>
+  <text class="label" x="714" y="254">PD</text>
+  <rect class="entry" x="688" y="278" width="90" height="24" rx="4"/>
+  <text class="mono" x="710" y="295">PDE</text>
+
+  <rect class="table" x="870" y="226" width="126" height="104" rx="8"/>
+  <text class="label" x="914" y="254">PT</text>
+  <rect class="entry" x="888" y="278" width="90" height="24" rx="4"/>
+  <text class="mono" x="912" y="295">PTE</text>
+
+  <path class="arrow" d="M204 278 L270 278"/>
+  <path class="arrow" d="M396 278 L470 278"/>
+  <path class="arrow" d="M596 278 L670 278"/>
+  <path class="arrow" d="M796 278 L870 278"/>
+
+  <rect class="offset" x="424" y="456" width="232" height="72" rx="8"/>
+  <text class="label" x="474" y="486">物理地址</text>
+  <text class="mono" x="454" y="510">PTE.page_frame + offset</text>
+  <path class="arrow" d="M934 330 C934 410, 690 492, 656 492"/>
+
+  <rect class="box" x="96" y="402" width="250" height="152" rx="8"/>
+  <text class="label" x="126" y="434">硬件做的事</text>
+  <text class="text" x="126" y="464">1. 用 CR3 找到顶级表物理页</text>
+  <text class="text" x="126" y="492">2. 每级取 9 位下标读 8 字节表项</text>
+  <text class="text" x="126" y="520">3. 检查 P/RW/US/NX 等权限位</text>
+
+  <rect class="box" x="734" y="402" width="250" height="152" rx="8"/>
+  <text class="label" x="764" y="434">TLB 命中时</text>
+  <text class="text" x="764" y="464">虚拟页到物理页框的结果已缓存</text>
+  <text class="text" x="764" y="492">不用重走 PML4 -> PT</text>
+  <text class="text" x="764" y="520">CR3/PCID 会影响这份缓存的保留</text>
+</svg>
